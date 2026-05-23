@@ -85,8 +85,8 @@ jobs:
           SUSFS_LABEL=""
           [ "${{ inputs.with_susfs }}" = "true" ] && SUSFS_LABEL="-SUSFS"
           
-          # Ambil tanggal build saat ini (format: HariBulanTahun)
-          BUILD_DATE=$(date -u '+%d%m%Y')
+          # Ambil tanggal build saat ini (format: HariBulanTahun, WIB timezone)
+          BUILD_DATE=$(TZ='Asia/Jakarta' date '+%d%m%Y')
           echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
           
           # Susun nama dasar file zip kernel: {NamaKustom}-{Toolchain}-{MetodeRoot}[-SUSFS]-{Tanggal}
@@ -1164,7 +1164,7 @@ jobs:
           echo "✅ Package created: ${BASE_NAME}-AnyKernel3.zip"
 
       - name: Get Build Timestamp
-        run: echo "BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_ENV
+        run: echo "BUILD_TIME=$(TZ='Asia/Jakarta' date '+%Y-%m-%d %H:%M WIB')" >> $GITHUB_ENV
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -1193,7 +1193,7 @@ jobs:
 
             ---
 
-            ### 🚀 Fitur Unggulan (Tournament Ready):
+            ### 🚀 Fitur Unggulan:
             * **📶 WiFi & Hotspot 100% Stabil:** Subsystem Netfilter NAT lengkap (IPv4/IPv6) + driver kustom `cfg80211` & `mac80211` terintegrasi secara modular dengan auto-loader fallback.
             * **🎛️ Epitaph Tuner Post-Boot:** Optimalisasi scheduler CPU schedutil, bypass limiter termal GPU MediaTek, ZRAM swappiness 180, dan read-ahead storage 512KB untuk performa gaming lancar jaya bebas lag!
             * **🐏 Memori Maksimal (Anti-OOM):** ZRAM ZSTD dengan kompresi multi-core paralel + Kernel Samepage Merging (KSM) untuk menghemat RAM hingga 1GB+ pada varian HP 4GB.
@@ -1212,179 +1212,4 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Notify Telegram on Failure
-        if: failure()
-        continue-on-error: true
-        env:
-          TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
-            echo "Telegram secrets not set. Skipping failure notification."
-            exit 0
-          fi
-
-          TG_API="https://api.telegram.org/bot${TG_BOT_TOKEN}"
-          ACTIONS_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          SUSFS_LABEL="No"
-          [ "${{ inputs.with_susfs }}" = "true" ] && SUSFS_LABEL="Yes"
-
-          # Kumpulkan pesan error penting dari berkas log kompilasi untuk diagnosis cepat
-          ERROR_LOG="/tmp/epitaph_error.log"
-          : > "$ERROR_LOG"
-
-          for log_candidate in \
-            "kernel/build.log" \
-            "kernel/common/build.log"; do
-            if [ -f "$log_candidate" ]; then
-              echo "=== $(basename $log_candidate) — filtered errors ===" >> "$ERROR_LOG"
-              grep -iE "error:|fatal:|undefined reference|cannot find|No such file|failed|❌" \
-                "$log_candidate" | tail -60 >> "$ERROR_LOG" 2>/dev/null || true
-              echo "" >> "$ERROR_LOG"
-              echo "--- raw tail (last 80 lines) ---" >> "$ERROR_LOG"
-              tail -80 "$log_candidate" >> "$ERROR_LOG" 2>/dev/null || true
-              echo "" >> "$ERROR_LOG"
-            fi
-          done
-
-          # Jika ada kegagalan patch dari SUSFS (file .rej), sertakan juga ke dalam log error
-          REJ_FILES=$(find kernel/common -name "*.rej" 2>/dev/null | head -5)
-          if [ -n "$REJ_FILES" ]; then
-            echo "=== REJECTED PATCH HUNKS ===" >> "$ERROR_LOG"
-            for rej in $REJ_FILES; do
-              echo "--- $rej ---" >> "$ERROR_LOG"
-              cat "$rej" >> "$ERROR_LOG"
-              echo "" >> "$ERROR_LOG"
-            done
-          fi
-
-          # Fallback kalau log kosong (error di pre-build step)
-          if [ ! -s "$ERROR_LOG" ]; then
-            printf "No build.log found.\nError likely in a pre-build step (git clone / toolchain / SUSFS).\nCheck GitHub Actions:\n%s\n" \
-              "$ACTIONS_URL" > "$ERROR_LOG"
-          fi
-
-          LOG_LINES=$(wc -l < "$ERROR_LOG")
-          LOG_BYTES=$(du -b "$ERROR_LOG" 2>/dev/null | cut -f1 || echo "0")
-
-          # ── 2. Header notif (sendMessage) ───────────────────────────────
-          HEADER=$(printf \
-            '<b>❌ Epitaph Kernel — Build FAILED</b>\n\n'\
-            '<b>Kernel Name:</b> ${{ inputs.custom_name }}\n'\
-            '<b>Version:</b> v${{ github.run_number }}\n'\
-            '<b>Developer:</b> ${{ inputs.author_name }}\n'\
-            '<b>Root:</b> ${{ inputs.ksu_method }}\n'\
-            '<b>Governor:</b> schedutil\n'\
-            '<b>SUSFS:</b> %s\n'\
-            '<b>Toolchain:</b> ${{ inputs.clang_toolchain }}\n'\
-            '<b>Triggered by:</b> ${{ github.actor }}\n\n'\
-            '<a href="%s">🔍 Full log di GitHub Actions</a>\n\n'\
-            '<i>⬇️ Error log dikirim sebagai file di bawah</i>' \
-            "$SUSFS_LABEL" "$ACTIONS_URL")
-
-          curl -s -X POST "${TG_API}/sendMessage" \
-            --form-string "chat_id=${TG_CHAT_ID}" \
-            --form-string "text=${HEADER}" \
-            --form-string "parse_mode=HTML" \
-            && echo "✅ Header notification sent" \
-            || echo "⚠️  Header notification failed"
-
-          # ── 3. Upload error log sebagai file .txt ───────────────────────
-          LOG_FILENAME="${{ env.ZIP_NAME }}-Error.log"
-          cp "$ERROR_LOG" "/tmp/${LOG_FILENAME}"
-
-          echo "📤 Uploading error log (${LOG_LINES} lines, ${LOG_BYTES} bytes)..."
-          HTTP_CODE=$(curl -s -o /tmp/tg_log_resp.json -w "%{http_code}" \
-            -X POST "${TG_API}/sendDocument" \
-            --form-string "chat_id=${TG_CHAT_ID}" \
-            -F "document=@/tmp/${LOG_FILENAME};filename=${LOG_FILENAME}" \
-            --form-string "caption=📋 Error log — ${{ inputs.ksu_method }} / schedutil / ${{ inputs.clang_toolchain }}" \
-            --form-string "parse_mode=HTML" || echo "000")
-
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "✅ Error log uploaded to Telegram"
-          else
-            echo "⚠️  Log upload failed (HTTP $HTTP_CODE)"
-            cat /tmp/tg_log_resp.json || true
-
-            # Fallback: paste 30 baris terakhir sebagai <pre> block
-            SNIPPET=$(tail -30 "$ERROR_LOG" | head -c 3500)
-            FALLBACK=$(printf '<b>📋 Error snippet (last 30 lines):</b>\n<pre>%s</pre>' "$SNIPPET")
-            curl -s -X POST "${TG_API}/sendMessage" \
-              --form-string "chat_id=${TG_CHAT_ID}" \
-              --form-string "text=${FALLBACK}" \
-              --form-string "parse_mode=HTML" \
-              && echo "✅ Fallback snippet sent" \
-              || echo "⚠️  Fallback snippet also failed (non-fatal)"
-          fi
-
-      - name: Send to Telegram
-        if: success()
-        continue-on-error: true
-        env:
-          TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
-            echo "Telegram secrets not set. Skipping."
-            exit 0
-          fi
-
-          ZIP_FILE=$(ls dist/*.zip 2>/dev/null | head -n 1)
-          [ -z "$ZIP_FILE" ] && echo "No zip found." && exit 0
-
-          ZIP_NAME=$(basename "$ZIP_FILE")
-          # du -b = ukuran dalam bytes (portable, tanpa --apparent-size)
-          ZIP_BYTES=$(du -b "$ZIP_FILE" 2>/dev/null | cut -f1 || echo "0")
-          ZIP_SIZE=$(du -h "$ZIP_FILE" 2>/dev/null | cut -f1 || echo "?")
-
-          SUSFS_LABEL="No"
-          [ "${{ inputs.with_susfs }}" = "true" ] && SUSFS_LABEL="Yes"
-
-          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ inputs.release_tag }}"
-
-          # Telegram sendDocument limit: 50MB (52428800 bytes)
-          TG_LIMIT=52428800
-
-          # Caption pakai HTML parse_mode agar rapi di Telegram
-          # Telegram caption max 1024 chars — jaga tetap ringkas
-          CAPTION=$(printf '<b>👑 Epitaph Kernel — Build Done (Tournament Ready)</b>\n\n<b>Kernel Name:</b> ${{ inputs.custom_name }}\n<b>Version:</b> v${{ github.run_number }}\n<b>Developer:</b> ${{ inputs.author_name }}\n<b>Type:</b> GKI 6.6\n<b>Root:</b> ${{ inputs.ksu_method }} v${{ env.KSU_VERSION }}\n<b>Governor:</b> schedutil (Optimized)\n<b>SUSFS:</b> %s\n<b>KMI:</b> ${{ env.KMI_GENERATION }}\n<b>Toolchain:</b> ${{ inputs.clang_toolchain }}\n  └ <i>${{ env.TOOLCHAIN_VER }}</i>\n<b>Size:</b> %s\n\n<b>🚀 Optimizations:</b>\n• WiFi & Hotspot NAT (IPv4/IPv6) 100%% OK\n• Epitaph Tuner Active (Gaming Engine)\n• ZRAM ZSTD Multi-comp & KSM Active\n\n<a href="%s">📦 GitHub Release</a>' \
-            "$SUSFS_LABEL" "$ZIP_SIZE" "$RELEASE_URL")
-
-          TG_API="https://api.telegram.org/bot${TG_BOT_TOKEN}"
-
-          if [ "$ZIP_BYTES" -le "$TG_LIMIT" ]; then
-            echo "📤 Uploading zip directly to Telegram ($ZIP_SIZE)..."
-            # sendDocument: upload file + caption sekaligus
-            # --form multipart diperlukan untuk binary upload
-            HTTP_CODE=$(curl -s -o /tmp/tg_response.json -w "%{http_code}" \
-              -X POST "${TG_API}/sendDocument" \
-              --form-string "chat_id=${TG_CHAT_ID}" \
-              -F "document=@${ZIP_FILE};filename=${ZIP_NAME}" \
-              --form-string "caption=${CAPTION}" \
-              --form-string "parse_mode=HTML" || echo "000")
-
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "✅ File uploaded to Telegram successfully"
-            else
-              echo "⚠️  Upload failed (HTTP $HTTP_CODE), falling back to text notification"
-              cat /tmp/tg_response.json || true
-
-              # Fallback: kirim teks + link saja
-              curl -s -X POST "${TG_API}/sendMessage" \
-                --form-string "chat_id=${TG_CHAT_ID}" \
-                --form-string "text=${CAPTION}" \
-                --form-string "parse_mode=HTML" \
-                && echo "✅ Fallback text notification sent" \
-                || echo "⚠️  Fallback text notification also failed (non-fatal)"
-            fi
-          else
-            echo "⚠️  Zip size ($ZIP_SIZE) exceeds Telegram 50MB limit — sending link only"
-            curl -s -X POST "${TG_API}/sendMessage" \
-              --form-string "chat_id=${TG_CHAT_ID}" \
-              --form-string "text=${CAPTION}" \
-              --form-string "parse_mode=HTML" \
-              && echo "✅ Text notification sent (file too large to upload)" \
-              || echo "⚠️  Text notification failed (non-fatal)"
-          fi
+# Telegram notifications moved to caller build_manager_gki.yml to notify per-run instead of per-matrix-build.

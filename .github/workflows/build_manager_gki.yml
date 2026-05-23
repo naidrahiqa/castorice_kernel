@@ -108,8 +108,41 @@ jobs:
           echo '${{ steps.matrix.outputs.matrix }}' | jq '.' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-  trigger:
+  notify_start:
+    name: "🚀 Notify Telegram (Starting)"
     needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Start Message to Telegram
+        continue-on-error: true
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "Telegram secrets not set. Skipping."
+            exit 0
+          fi
+          
+          VARIANTS=""
+          if [ "${{ inputs.susfs_variant }}" = "both" ]; then
+            VARIANTS="no-susfs & susfs"
+          else
+            VARIANTS="${{ inputs.susfs_variant }}"
+          fi
+
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          
+          MESSAGE=$(printf '<b>🚀 Epitaph Kernel — Build Starting</b>\n\n<b>Developer:</b> Naidrahiqa\n<b>Release Tag:</b> %s\n<b>SUSFS Variant:</b> %s\n<b>Toolchain:</b> %s\n<b>Total Builds:</b> %s\n<b>Triggered by:</b> %s\n\n<a href="%s">🔍 Monitor Build Progress on GitHub Actions</a>' \
+            "${{ inputs.release_tag }}" "$VARIANTS" "${{ inputs.toolchain }}" "${{ needs.prepare.outputs.total }}" "${{ github.actor }}" "$RUN_URL")
+          
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            --form-string "chat_id=${TG_CHAT_ID}" \
+            --form-string "text=${MESSAGE}" \
+            --form-string "parse_mode=HTML"
+
+  trigger:
+    needs: [prepare, notify_start]
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
@@ -125,7 +158,7 @@ jobs:
       release_tag: "${{ inputs.release_tag }}"
 
   summary:
-    name: "📊 Summary"
+    name: "📊 Summary & Notify"
     needs: [prepare, trigger]
     runs-on: ubuntu-latest
     if: always()
@@ -144,4 +177,45 @@ jobs:
           echo "| **Toolchain** | \`${{ inputs.toolchain }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Total Builds** | \`${{ needs.prepare.outputs.total }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "✅ All builds triggered. Check the **Actions** tab for individual progress." >> "$GITHUB_STEP_SUMMARY"
+          
+          RESULT="${{ needs.trigger.result }}"
+          if [ "$RESULT" = "success" ]; then
+            echo "✅ All builds completed successfully." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Some builds failed or were cancelled." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Send Finished Message to Telegram
+        continue-on-error: true
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "Telegram secrets not set. Skipping."
+            exit 0
+          fi
+
+          RESULT="${{ needs.trigger.result }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ inputs.release_tag }}"
+          
+          VARIANTS=""
+          if [ "${{ inputs.susfs_variant }}" = "both" ]; then
+            VARIANTS="no-susfs & susfs"
+          else
+            VARIANTS="${{ inputs.susfs_variant }}"
+          fi
+
+          if [ "$RESULT" = "success" ]; then
+            MESSAGE=$(printf '<b>👑 Epitaph Kernel — Build Finished Successfully</b>\n\n<b>Developer:</b> Naidrahiqa\n<b>Release Tag:</b> %s\n<b>SUSFS Variant:</b> %s\n<b>Toolchain:</b> %s\n<b>Status:</b> ✅ SUCCESS\n\nAll kernel builds completed successfully!\n\n📦 <a href="%s">GitHub Release</a>\n🔍 <a href="%s">Actions Run Log</a>' \
+              "${{ inputs.release_tag }}" "$VARIANTS" "${{ inputs.toolchain }}" "$RELEASE_URL" "$RUN_URL")
+          else
+            MESSAGE=$(printf '<b>❌ Epitaph Kernel — Build Failed / Completed with Errors</b>\n\n<b>Developer:</b> Naidrahiqa\n<b>Release Tag:</b> %s\n<b>SUSFS Variant:</b> %s\n<b>Toolchain:</b> %s\n<b>Status:</b> ❌ FAILED\n\nSome of the matrix builds failed or were cancelled. Please check the logs.\n\n🔍 <a href="%s">Actions Run Log</a>' \
+              "${{ inputs.release_tag }}" "$VARIANTS" "${{ inputs.toolchain }}" "$RUN_URL")
+          fi
+
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            --form-string "chat_id=${TG_CHAT_ID}" \
+            --form-string "text=${MESSAGE}" \
+            --form-string "parse_mode=HTML"
