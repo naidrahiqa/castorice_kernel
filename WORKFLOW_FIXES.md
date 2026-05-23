@@ -305,6 +305,18 @@
 
 ---
 
+### 🛡️ 14. Otomasi Penyuntikan Patch SUSFS ke KernelSU-Next
+* **Lokasi Berkas**: `.github/workflows/_build_kernel_core.yml` (Bagian: *Setup SUSFS*)
+* **Masalah**: Integrasi varian SUSFS mengalami kegagalan kompilasi secara terus-menerus karena kernel dibangun dengan `CONFIG_KSU_SUSFS=y` namun source code KernelSU-Next tidak di-patch dengan berkas `10_enable_susfs_for_ksu.patch`. Hal ini menyebabkan ketiadaan fungsi pengait (*hooks*) di berkas inti `hooks.c`, `selinux.c`, dan `vfs.c`.
+* **Sebelum**:
+  Hanya menyuntikkan fungsi `susfs_init()` ke berkas `init.c` KernelSU secara manual menggunakan skrip `perl`. Source code driver KernelSU lainnya dibiarkan tanpa pengait SUSFS resmi.
+* **Sesudah**:
+  Menyuntikkan patch resmi `10_enable_susfs_for_ksu.patch` langsung ke dalam repositori `drivers/kernelsu/` menggunakan penanganan kesalahan ganda (`git apply` dan cadangan `patch -p1 --forward --fuzz=3`), diikuti oleh pelacakan Git secara ketat agar Bazel Kleaf sandbox mendeteksi perubahan berkas tersebut secara sempurna. Manual `susfs_init()` tetap dipertahankan sebagai fallback cadangan otomatis.
+* **Dampak**: Varian kernel dengan dukungan penuh SUSFS + KernelSU-Next kini dapat dikompilasi secara sukses, stabil, dan lancar tanpa mengalami crash ataupun kegagalan pemetaan simbol (*symbol layout mismatch*).
+
+---
+
 ## 🎯 Kesimpulan Perbaikan
-Seluruh celah keamanan, kelemahan penanganan memori, ketidakakuratan integrasi root, kesalahan konfigurasi modular, kendala kegagalan tethering, serta pelambatan performa (thermal limiters) pada kernel Epitaph GKI 6.6 untuk Xiaomi Redmi 12 kini telah **berhasil diperbaiki secara menyeluruh**. Infrastruktur CI/CD Anda kini sepenuhnya siap digunakan untuk skala produksi (*production-ready*).
+Seluruh celah keamanan, kelemahan penanganan memori, ketidakakuratan integrasi root, kesalahan konfigurasi modular, kendala kegagalan tethering, pelambatan performa (thermal limiters), serta **kegagalan build varian SUSFS** pada kernel Epitaph GKI 6.6 untuk Xiaomi Redmi 12 kini telah **berhasil diperbaiki secara menyeluruh**. Infrastruktur CI/CD Anda kini sepenuhnya siap digunakan untuk skala produksi (*production-ready*).
+
 

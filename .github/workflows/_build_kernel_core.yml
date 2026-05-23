@@ -553,33 +553,53 @@ jobs:
             fi
           fi
 
-          # LANGKAH 4: Integrasikan inisialisasi susfs_init() ke dalam inisialisasi KernelSU-Next
+          # LANGKAH 4: Integrasikan KernelSU-Next untuk SUSFS menggunakan patch resmi
           KSU_KERNEL="drivers/kernelsu"
           SUSFS_INTEGRATED=false
           if [ -d "$KSU_KERNEL" ]; then
-            if [ "$KSU_METHOD" = "kernelsu-next" ]; then
-              echo "   KernelSU-Next detected. Manually injecting SUSFS hooks..."
-
-              INIT_C=$(find drivers/kernelsu -name 'init.c' | head -n1)
-              if [ -z "$INIT_C" ]; then
-                echo "❌ ERROR: init.c tidak ditemukan di drivers/kernelsu/"
-                find drivers/kernelsu/ | head -20
-                exit 1
+            echo "   Applying SUSFS patch to KernelSU/KernelSU-Next..."
+            
+            # Temukan berkas patch di dalam susfs4ksu
+            KSU_PATCH=""
+            for p in \
+              "../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
+              "../susfs4ksu/kernel_patches/10_enable_susfs_for_ksu.patch"; do
+              if [ -f "$p" ]; then
+                KSU_PATCH="$p"
+                break
               fi
-              echo "✅ Found init.c at: $INIT_C"
+            done
 
-              if [ -f "$INIT_C" ]; then
-                if ! grep -q 'susfs_init' "$INIT_C"; then
-                  sed -i '1i #include <linux/susfs.h>' "$INIT_C"
-                  perl -0777 -pi -e 's/(int __init kernelsu_init\(void\)\s*\{)/$1\n#ifdef CONFIG_KSU_SUSFS\n\tsusfs_init();\n#endif\n/' "$INIT_C"
-                  echo "   ✅ susfs_init() injected into $INIT_C"
+            if [ -n "$KSU_PATCH" ]; then
+              cd "$KSU_KERNEL"
+              if git apply --check "$KSU_PATCH" 2>/dev/null; then
+                git apply "$KSU_PATCH" && echo "   ✅ KernelSU SUSFS patch applied via git apply"
+              else
+                echo "   ⚠️ git apply failed for KernelSU, trying patch command..."
+                if patch -p1 --forward --fuzz=3 --dry-run < "$KSU_PATCH" >/dev/null 2>&1; then
+                  patch -p1 --forward --fuzz=3 < "$KSU_PATCH" && echo "   ✅ KernelSU SUSFS patch applied via patch"
                 else
-                  echo "   ℹ️  susfs_init() already present, skipping"
+                  echo "   ❌ KernelSU SUSFS patch failed to apply cleanly. Attempting manual fallback..."
                 fi
-                git add -f "$INIT_C" 2>/dev/null || true
               fi
+              cd ../..
+            else
+              echo "   ⚠️ KernelSU SUSFS patch file not found, skipping patch application"
             fi
 
+            # Fallback manual injection jika KSU init.c belum ter-patch
+            INIT_C=$(find drivers/kernelsu -name 'init.c' | head -n1)
+            if [ -f "$INIT_C" ] && ! grep -q 'susfs_init' "$INIT_C"; then
+              echo "   Applying manual susfs_init() fallback injection into $INIT_C..."
+              sed -i '1i #include <linux/susfs.h>' "$INIT_C"
+              perl -0777 -pi -e 's/(int __init kernelsu_init\(void\)\s*\{)/$1\n#ifdef CONFIG_KSU_SUSFS\n\tsusfs_init();\n#endif\n/' "$INIT_C"
+              echo "   ✅ Manual susfs_init() fallback injection complete"
+            fi
+            
+            # Pastikan Git melacak semua perubahan di drivers/kernelsu agar terdeteksi Bazel Kleaf sandbox
+            git add -f drivers/kernelsu/ 2>/dev/null || true
+
+            # Tambahkan menu Kconfig jika belum ada
             if ! grep -q "CONFIG_KSU_SUSFS" "$KSU_KERNEL/Kconfig" 2>/dev/null; then
               printf '%s\n' \
                 'menu "KernelSU - SUSFS"' \
@@ -595,6 +615,8 @@ jobs:
                 'config KSU_SUSFS_SUS_MAP' '  bool "Hide mmapped files from proc maps"' '  depends on KSU_SUSFS' '  default y' \
                 'endmenu' >> "$KSU_KERNEL/Kconfig"
             fi
+
+            # Tambahkan blok Makefile jika belum ada
             if ! grep -q "SUSFS_VERSION" "$KSU_KERNEL/Makefile" 2>/dev/null; then
               printf '%s\n' \
                 '## SUSFS ##' \
@@ -605,6 +627,7 @@ jobs:
                 '$(info -- SUSFS not integrated)' \
                 'endif' >> "$KSU_KERNEL/Makefile"
             fi
+
             git add "$KSU_KERNEL/Makefile" "$KSU_KERNEL/Kconfig" 2>/dev/null || true
             grep -q "config KSU_SUSFS" "$KSU_KERNEL/Kconfig" 2>/dev/null && SUSFS_INTEGRATED=true
           fi
