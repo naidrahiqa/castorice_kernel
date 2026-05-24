@@ -20,6 +20,31 @@ log_msg() {
 
 log_msg "=== EPITAPH TUNER STARTED ==="
 
+# Initialize Epitaph Schedutil Performance profile folder and files
+mkdir -p /data/adb/epitaph 2>/dev/null
+MODE_FILE="/data/adb/epitaph/mode"
+APPLY_FILE="/data/adb/epitaph/apply"
+
+if [ ! -f "$MODE_FILE" ]; then
+  echo "balanced" > "$MODE_FILE"
+  chmod 644 "$MODE_FILE" 2>/dev/null
+fi
+
+MODE=$(cat "$MODE_FILE" | tr -d ' \r\n')
+if [ "$MODE" != "performance" ] && [ "$MODE" != "balanced" ] && [ "$MODE" != "battery" ]; then
+  MODE="balanced"
+fi
+
+log_msg "Selected Schedutil Profile: $MODE"
+
+# Create trigger script to re-apply real-time without reboot
+cat << 'EOF' > "$APPLY_FILE"
+#!/system/bin/sh
+# Trigger re-apply Epitaph Schedutil profile real-time without reboot
+/system/bin/sh /data/adb/service.d/epitaph_tuner.sh
+EOF
+chmod 755 "$APPLY_FILE" 2>/dev/null
+
 # 1. FALLBACK WIFI MODULE LOADER
 # Ensures 100% WiFi/Hotspot reliability if systemless module loading fails
 log_msg "Section 1: Checking WiFi module fallback..."
@@ -43,15 +68,34 @@ else
 fi
 
 # 2. CPU SCHEDUTIL GOVERNOR OPTIMIZATIONS
-# Smooths UI transitions & eliminates micro-stutters
-log_msg "Section 2: Tuning CPU Schedutil governors..."
+# Smooths UI transitions & eliminates micro-stutters based on active profile
+log_msg "Section 2: Tuning CPU Schedutil governors for profile: $MODE"
+
+UP_RATE=500
+DOWN_RATE=10000
+
+case "$MODE" in
+  performance)
+    UP_RATE=100
+    DOWN_RATE=40000
+    ;;
+  battery)
+    UP_RATE=2000
+    DOWN_RATE=1000
+    ;;
+  balanced|*)
+    UP_RATE=500
+    DOWN_RATE=10000
+    ;;
+esac
+
 for policy in /sys/devices/system/cpu/cpufreq/policy*; do
   if [ -f "$policy/scaling_governor" ]; then
     gov=$(cat "$policy/scaling_governor")
     if [ "$gov" = "schedutil" ]; then
-      echo 500 > "$policy/schedutil/up_rate_limit_us" 2>/dev/null
-      echo 10000 > "$policy/schedutil/down_rate_limit_us" 2>/dev/null
-      log_msg "Tuned $policy (schedutil)"
+      echo "$UP_RATE" > "$policy/schedutil/up_rate_limit_us" 2>/dev/null
+      echo "$DOWN_RATE" > "$policy/schedutil/down_rate_limit_us" 2>/dev/null
+      log_msg "Tuned $policy (schedutil): up=$UP_RATE, down=$DOWN_RATE"
     fi
   fi
 done

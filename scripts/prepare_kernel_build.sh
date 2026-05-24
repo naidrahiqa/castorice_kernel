@@ -361,6 +361,7 @@ patch_build_system() {
 
   python3 "$GITHUB_WORKSPACE/workflow_scripts/patch_build_system.py"
   python3 "$GITHUB_WORKSPACE/workflow_scripts/patch_vermagic.py"
+  python3 "$GITHUB_WORKSPACE/workflow_scripts/patch_schedutil.py"
 
   git add BUILD.bazel modules.bzl 2>/dev/null || true
   for f in build.config.gki build.config.gki.aarch64; do

@@ -317,8 +317,9 @@ jobs:
               find . -name "*.rej" -delete 2>/dev/null || true
             fi
 
-            # CRITICAL: Commit all SUSFS changes so Bazel Kleaf sandbox can see them
+            # CRITICAL: Commit all SUSFS and custom changes so Bazel Kleaf sandbox can see them
             cd "$GITHUB_WORKSPACE/kernel/common"
+            git add -u 2>/dev/null || true
             git -c user.email="ci@epitaph" -c user.name="Epitaph CI" \
               commit -m "ci: integrate SUSFS $(cat include/linux/susfs.h | grep SUSFS_VERSION | head -1 | awk '{print $3}' || echo 'unknown')" \
               --allow-empty 2>/dev/null || true
@@ -349,6 +350,10 @@ jobs:
           add_cfg "CONFIG_HAVE_KPROBES=y"
           add_cfg "CONFIG_KPROBE_EVENTS=y"
           add_cfg "CONFIG_EXT4_FS=y"
+
+          echo "" >> "$DEFCONFIG"
+          echo "# Energy Model" >> "$DEFCONFIG"
+          add_cfg "CONFIG_ENERGY_MODEL=y"
 
           if [ "${{ inputs.with_susfs }}" == "true" ]; then
             if [ "$SUSFS_OK" = "true" ]; then
