@@ -52,6 +52,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Debug Inputs
         run: |
@@ -418,6 +420,38 @@ jobs:
           echo "# ZRAM & Memory Optimizations" >> "$DEFCONFIG"
           add_cfg "CONFIG_ZSMALLOC=m"
           add_cfg "CONFIG_ZRAM=m"
+          add_cfg "CONFIG_CRYPTO_ZSTD=y"
+          add_cfg "CONFIG_ZRAM_MULTI_COMP=y"
+          add_cfg "CONFIG_ZRAM_DEF_COMP_ZSTD=y"
+          add_cfg "CONFIG_CRYPTO_LZ4=y"
+          add_cfg "CONFIG_ZRAM_DEF_COMP_LZ4=y"
+
+          echo "" >> "$DEFCONFIG"
+          echo "# MGLRU Memory Reclamation" >> "$DEFCONFIG"
+          add_cfg "CONFIG_LRU_GEN=y"
+          add_cfg "CONFIG_LRU_GEN_ENABLED=y"
+          add_cfg "CONFIG_LRU_GEN_STATS=n"
+
+          echo "" >> "$DEFCONFIG"
+          echo "# HZ=300 Scheduler Tuning" >> "$DEFCONFIG"
+          add_cfg "CONFIG_HZ_300=y"
+          add_cfg "CONFIG_HZ=300"
+
+          echo "" >> "$DEFCONFIG"
+          echo "# I/O Schedulers" >> "$DEFCONFIG"
+          add_cfg "CONFIG_IOSCHED_BFQ=y"
+          add_cfg "CONFIG_BFQ_GROUP_IOSCHED=y"
+          add_cfg "CONFIG_MQ_IOSCHED_KYBER=y"
+
+          echo "" >> "$DEFCONFIG"
+          echo "# TCP BBR & FQ Scheduling" >> "$DEFCONFIG"
+          add_cfg "CONFIG_TCP_CONG_BBR=y"
+          add_cfg "CONFIG_NET_SCH_FQ=y"
+          add_cfg 'CONFIG_DEFAULT_TCP_CONG="bbr"'
+
+          echo "" >> "$DEFCONFIG"
+          echo "# WireGuard VPN Support" >> "$DEFCONFIG"
+          add_cfg "CONFIG_WIREGUARD=y"
 
           echo "" >> "$DEFCONFIG"
           echo "# WiFi & Connectivity" >> "$DEFCONFIG"
@@ -436,11 +470,12 @@ jobs:
           add_cfg "CONFIG_IP_NF_NAT=y"
           add_cfg "CONFIG_IP_NF_TARGET_MASQUERADE=y"
 
-          # Branding — Custom name
+          # Branding — Custom name with build number
+          BUILD_VER="${{ github.run_number }}"
           sed -i '/CONFIG_LOCALVERSION/d' $DEFCONFIG
           echo "" >> $DEFCONFIG
           echo "# Branding" >> $DEFCONFIG
-          echo 'CONFIG_LOCALVERSION="-Epitaph"' >> $DEFCONFIG
+          echo "CONFIG_LOCALVERSION=\"-Epitaph-v${BUILD_VER}\"" >> $DEFCONFIG
           echo "CONFIG_LOCALVERSION_AUTO=n" >> $DEFCONFIG
 
           # PStore (RAMoops) — KEEP
@@ -602,6 +637,22 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Generate Changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          CHANGELOG=""
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log --oneline ${PREV_TAG}..HEAD --no-merges 2>/dev/null | head -20)
+          else
+            CHANGELOG=$(git log --oneline -20 --no-merges 2>/dev/null || echo "")
+          fi
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="No recent changes recorded."
+          fi
+          echo "CHANGELOG<<EOF" >> $GITHUB_ENV
+          echo "$CHANGELOG" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Package AnyKernel3
         run: |
           CUSTOM_NAME="${{ inputs.custom_name }}"
@@ -611,7 +662,8 @@ jobs:
           TOOLCHAIN_SHORT="${{ env.TOOLCHAIN_NAME }}"
           BASE_NAME="${{ env.ZIP_NAME }}"
 
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3 && cd ak3
+          # PINNED FORK: Menggunakan fork AnyKernel3 milik Naidrahiqa untuk menghindari perubahan upstream yang tidak kompatibel
+          git clone --depth=1 https://github.com/Naidrahiqa/AnyKernel3.git ak3 && cd ak3
 
           # Tentukan format penamaan kernel yang akan muncul pada menu aplikasi Kernel Manager di ponsel
           if [ "${{ inputs.with_susfs }}" == "true" ]; then
@@ -728,8 +780,10 @@ jobs:
             - **KMI:** ${{ env.KMI_GENERATION }}
             - **Built:** ${{ env.BUILD_TIME }} (run #${{ github.run_number }})
 
-            > 📋 **Tersedia dalam berbagai varian toolchain & SUSFS.**
-            > Pilih file zip yang sesuai kebutuhan lo dari daftar Assets di bawah.
+            ### 📝 Changes
+            ```
+            ${{ env.CHANGELOG }}
+            ```
 
             ---
 

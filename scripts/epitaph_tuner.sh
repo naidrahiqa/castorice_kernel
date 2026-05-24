@@ -10,34 +10,59 @@
 
 sleep 5
 
+LOG_FILE="/data/local/tmp/epitaph_tuner.log"
+mkdir -p /data/local/tmp 2>/dev/null
+chmod 644 "$LOG_FILE" 2>/dev/null
+
+log_msg() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+log_msg "=== EPITAPH TUNER STARTED ==="
+
 # 1. FALLBACK WIFI MODULE LOADER
 # Ensures 100% WiFi/Hotspot reliability if systemless module loading fails
+log_msg "Section 1: Checking WiFi module fallback..."
 if ! lsmod | grep -q cfg80211; then
+  log_msg "WiFi module not loaded, attempting fallback loading..."
   if [ -d /data/adb/wifi_fix ]; then
     insmod /data/adb/wifi_fix/rfkill.ko 2>/dev/null
     insmod /data/adb/wifi_fix/libarc4.ko 2>/dev/null
     insmod /data/adb/wifi_fix/cfg80211.ko 2>/dev/null
     insmod /data/adb/wifi_fix/mac80211.ko 2>/dev/null
+    if lsmod | grep -q cfg80211; then
+      log_msg "Fallback WiFi module successfully loaded"
+    else
+      log_msg "Fallback WiFi module failed to load"
+    fi
+  else
+    log_msg "/data/adb/wifi_fix directory not found, fallback unavailable"
   fi
+else
+  log_msg "WiFi module (cfg80211) already loaded by systemless loader"
 fi
 
 # 2. CPU SCHEDUTIL GOVERNOR OPTIMIZATIONS
 # Smooths UI transitions & eliminates micro-stutters
+log_msg "Section 2: Tuning CPU Schedutil governors..."
 for policy in /sys/devices/system/cpu/cpufreq/policy*; do
   if [ -f "$policy/scaling_governor" ]; then
     gov=$(cat "$policy/scaling_governor")
     if [ "$gov" = "schedutil" ]; then
       echo 500 > "$policy/schedutil/up_rate_limit_us" 2>/dev/null
       echo 10000 > "$policy/schedutil/down_rate_limit_us" 2>/dev/null
+      log_msg "Tuned $policy (schedutil)"
     fi
   fi
 done
 
 # 3. GPU GED & MALI LIMITER RESET
 # Fixes GPU frequency locks / MTK thermal driver throttle bugs
+log_msg "Section 3: Optimizing GPU settings..."
 if [ -d /sys/kernel/ged/hal ]; then
   echo 1 > /sys/kernel/ged/hal/gpu_boost 2>/dev/null
   echo 1 > /sys/module/ged/parameters/boost_gpu_enable 2>/dev/null
+  log_msg "GED GPU boost enabled"
 fi
 for mali_dir in /sys/class/misc/mali0/device /sys/devices/platform/*.mali; do
   if [ -d "$mali_dir" ]; then
@@ -49,23 +74,37 @@ for mali_dir in /sys/class/misc/mali0/device /sys/devices/platform/*.mali; do
         cat "$mali_dir/max_clock" > "$mali_dir/dvfs_max_freq" 2>/dev/null
       fi
     fi
+    log_msg "Mali GPU policy set to dynamic & maximum frequency locked for $mali_dir"
   fi
 done
 
 # 4. MEMORY & VIRTUAL MEMORY TUNING
 # Resolves high RAM consumption, prevents OOM & background app kills
-echo 180 > /proc/sys/vm/swappiness 2>/dev/null
-echo 100 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
-echo 20 > /proc/sys/vm/dirty_ratio 2>/dev/null
-echo 5 > /proc/sys/vm/dirty_background_ratio 2>/dev/null
+log_msg "Section 4: Tuning Memory & Virtual Memory..."
+echo 180 > /proc/sys/vm/swappiness 2>/dev/null && log_msg "Swappiness set to 180"
+echo 100 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null && log_msg "vfs_cache_pressure set to 100"
+echo 20 > /proc/sys/vm/dirty_ratio 2>/dev/null && log_msg "dirty_ratio set to 20"
+echo 5 > /proc/sys/vm/dirty_background_ratio 2>/dev/null && log_msg "dirty_background_ratio set to 5"
 if [ -e /dev/block/zram0 ]; then
-  echo 2 > /sys/block/zram0/max_comp_streams 2>/dev/null
+  echo 2 > /sys/block/zram0/max_comp_streams 2>/dev/null && log_msg "zram0 max_comp_streams set to 2"
 fi
 
 # 5. STORAGE READ-AHEAD OPTIMIZATION
 # Enhances app loading speed
+log_msg "Section 5: Tuning Storage Read-Ahead..."
 for queue in /sys/block/*/queue; do
   if [ -d "$queue" ]; then
     echo 512 > "$queue/read_ahead_kb" 2>/dev/null
   fi
 done
+log_msg "Read-ahead buffers set to 512KB for storage block queues"
+
+# 6. TCP SYSCTL NETWORK TUNING
+# Optimizes networking performance & latency
+log_msg "Section 6: Applying TCP sysctl optimizations..."
+echo "bbr" > /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null && log_msg "TCP congestion control set to BBR"
+echo "fq" > /proc/sys/net/core/default_qdisc 2>/dev/null && log_msg "Default qdisc set to FQ"
+echo 3 > /proc/sys/net/ipv4/tcp_fastopen 2>/dev/null && log_msg "TCP Fast Open set to 3"
+echo 1 > /proc/sys/net/ipv4/tcp_slow_start_after_idle 2>/dev/null && log_msg "TCP slow start after idle disabled (1)"
+
+log_msg "=== EPITAPH TUNER COMPLETED SUCCESSFULLY ==="
