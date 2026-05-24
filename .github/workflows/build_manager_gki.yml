@@ -45,6 +45,19 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       total: ${{ steps.matrix.outputs.total }}
     steps:
+      - name: Validate release_tag
+        shell: bash
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          if [[ ! "$TAG" =~ ^v[0-9] ]]; then
+            echo "❌ ERROR: release_tag must start with 'v' followed by a number (e.g., v1.0, v2.3-beta)"
+            exit 1
+          fi
+          if [[ "$TAG" =~ [[:space:]] ]]; then
+            echo "❌ ERROR: release_tag must not contain spaces!"
+            exit 1
+          fi
+          echo "✅ release_tag validated: $TAG"
       - name: Build Matrix
         id: matrix
         shell: python
@@ -157,7 +170,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
-      max-parallel: 8
+      max-parallel: 4
     uses: ./.github/workflows/_build_kernel_core.yml
     secrets: inherit
     with:

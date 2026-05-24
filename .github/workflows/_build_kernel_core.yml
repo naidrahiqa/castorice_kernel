@@ -596,7 +596,7 @@ jobs:
             if [ -f "$INIT_C" ] && ! grep -q 'susfs_init' "$INIT_C"; then
               echo "   Applying manual susfs_init() fallback injection into $INIT_C..."
               sed -i '1i #include <linux/susfs.h>' "$INIT_C"
-              perl -0777 -pi -e 's/(int __init kernelsu_init\(void\)\s*\{)/$1\n#ifdef CONFIG_KSU_SUSFS\n\tsusfs_init();\n#endif\n/' "$INIT_C"
+              python3 -c "import re, sys; c=open('$INIT_C').read(); c,n=re.subn(r'(int __init kernelsu_init\(void\)\s*\{)',r'\1\n#ifdef CONFIG_KSU_SUSFS\n\tsusfs_init();\n#endif',c); open('$INIT_C','w').write(c); sys.exit(0 if n else 1)"
               echo "   ✅ Manual susfs_init() fallback injection complete"
             fi
             
@@ -1037,9 +1037,8 @@ jobs:
           # ─── END MODULE COPY ────────────────────────────────────────
 
           # 🎛️ EPITAPH TUNER & WIFI FALLBACK (PERSISTENT):
-          # Jika proses pemuatan modul secara systemless gagal pada HyperOS 2.0 / Android 15,
-          # kita buat skrip booting otomatis (post-boot service.d) via KernelSU atau Magisk untuk insmod modul secara manual,
-          # sekaligus mengoptimalkan frekuensi schedutil CPU, governor GPU (Ged/Mali), ZRAM, RAM, dan I/O read-ahead.
+          # Skrip di-shipped dari repo sebagai file terpisah (scripts/epitaph_tuner.sh)
+          # agar lebih mudah dimaintain dan di-debug dibandingkan inline heredoc.
           echo "" >> anykernel.sh
           echo "# Epitaph Tuner & WiFi Fallback via KernelSU/Magisk" >> anykernel.sh
           echo "if [ -d /data/adb/service.d ]; then" >> anykernel.sh
@@ -1049,67 +1048,8 @@ jobs:
           echo "  chmod 644 /data/adb/wifi_fix/*.ko;" >> anykernel.sh
           echo "  " >> anykernel.sh
           echo "  cat << 'INNER_EOF' > /data/adb/service.d/epitaph_tuner.sh" >> anykernel.sh
-          echo "#!/system/bin/sh" >> anykernel.sh
-          echo "# ==============================================================================" >> anykernel.sh
-          echo "#  🎛️ EPITAPH KERNEL OPTIMIZATION & RELIABILITY TUNER" >> anykernel.sh
-          echo "#  Designed by Naidrahiqa & Antigravity AI" >> anykernel.sh
-          echo "# ==============================================================================" >> anykernel.sh
-          echo "sleep 5" >> anykernel.sh
+          cat "$GITHUB_WORKSPACE/scripts/epitaph_tuner.sh" >> anykernel.sh
           echo "" >> anykernel.sh
-          echo "# 1. FALLBACK WIFI MODULE LOADER (Ensures 100% Wifi/Hotspot reliability)" >> anykernel.sh
-          echo "if ! lsmod | grep -q cfg80211; then" >> anykernel.sh
-          echo "  if [ -d /data/adb/wifi_fix ]; then" >> anykernel.sh
-          echo "    insmod /data/adb/wifi_fix/rfkill.ko 2>/dev/null" >> anykernel.sh
-          echo "    insmod /data/adb/wifi_fix/libarc4.ko 2>/dev/null" >> anykernel.sh
-          echo "    insmod /data/adb/wifi_fix/cfg80211.ko 2>/dev/null" >> anykernel.sh
-          echo "    insmod /data/adb/wifi_fix/mac80211.ko 2>/dev/null" >> anykernel.sh
-          echo "  fi" >> anykernel.sh
-          echo "fi" >> anykernel.sh
-          echo "" >> anykernel.sh
-          echo "# 2. CPU SCHEDUTIL GOVERNOR OPTIMIZATIONS (Smooths UI transitions & eliminates micro-stutters)" >> anykernel.sh
-          echo "for policy in /sys/devices/system/cpu/cpufreq/policy*; do" >> anykernel.sh
-          echo "  if [ -f \"\$policy/scaling_governor\" ]; then" >> anykernel.sh
-          echo "    gov=\$(cat \"\$policy/scaling_governor\")" >> anykernel.sh
-          echo "    if [ \"\$gov\" = \"schedutil\" ]; then" >> anykernel.sh
-          echo "      echo 500 > \"\$policy/schedutil/up_rate_limit_us\" 2>/dev/null" >> anykernel.sh
-          echo "      echo 10000 > \"\$policy/schedutil/down_rate_limit_us\" 2>/dev/null" >> anykernel.sh
-          echo "    fi" >> anykernel.sh
-          echo "  fi" >> anykernel.sh
-          echo "done" >> anykernel.sh
-          echo "" >> anykernel.sh
-          echo "# 3. GPU GED & MALI LIMITER RESET (Fixes GPU frequency locks / MTK thermal driver throttle bugs)" >> anykernel.sh
-          echo "if [ -d /sys/kernel/ged/hal ]; then" >> anykernel.sh
-          echo "  echo 1 > /sys/kernel/ged/hal/gpu_boost 2>/dev/null" >> anykernel.sh
-          echo "  echo 1 > /sys/module/ged/parameters/boost_gpu_enable 2>/dev/null" >> anykernel.sh
-          echo "fi" >> anykernel.sh
-          echo "for mali_dir in /sys/class/misc/mali0/device /sys/devices/platform/*.mali; do" >> anykernel.sh
-          echo "  if [ -d \"\$mali_dir\" ]; then" >> anykernel.sh
-          echo "    echo \"dynamic\" > \"\$mali_dir/power_policy\" 2>/dev/null" >> anykernel.sh
-          echo "    if [ -f \"\$mali_dir/dvfs_max_freq\" ]; then" >> anykernel.sh
-          echo "      if [ -f \"\$mali_dir/dvfs_max_freq_khz\" ]; then" >> anykernel.sh
-          echo "        cat \"\$mali_dir/dvfs_max_freq_khz\" > \"\$mali_dir/dvfs_max_freq\" 2>/dev/null" >> anykernel.sh
-          echo "      elif [ -f \"\$mali_dir/max_clock\" ]; then" >> anykernel.sh
-          echo "        cat \"\$mali_dir/max_clock\" > \"\$mali_dir/dvfs_max_freq\" 2>/dev/null" >> anykernel.sh
-          echo "      fi" >> anykernel.sh
-          echo "    fi" >> anykernel.sh
-          echo "  fi" >> anykernel.sh
-          echo "done" >> anykernel.sh
-          echo "" >> anykernel.sh
-          echo "# 4. MEMORY & VIRTUAL MEMORY TUNING (Resolves High RAM consumption, prevents OOM & Background App Kills)" >> anykernel.sh
-          echo "echo 180 > /proc/sys/vm/swappiness 2>/dev/null" >> anykernel.sh
-          echo "echo 100 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null" >> anykernel.sh
-          echo "echo 20 > /proc/sys/vm/dirty_ratio 2>/dev/null" >> anykernel.sh
-          echo "echo 5 > /proc/sys/vm/dirty_background_ratio 2>/dev/null" >> anykernel.sh
-          echo "if [ -e /dev/block/zram0 ]; then" >> anykernel.sh
-          echo "  echo 2 > /sys/block/zram0/max_comp_streams 2>/dev/null" >> anykernel.sh
-          echo "fi" >> anykernel.sh
-          echo "" >> anykernel.sh
-          echo "# 5. STORAGE READ-AHEAD OPTIMIZATION (Enhances app loading speed)" >> anykernel.sh
-          echo "for queue in /sys/block/*/queue; do" >> anykernel.sh
-          echo "  if [ -d \"\$queue\" ]; then" >> anykernel.sh
-          echo "    echo 512 > \"\$queue/read_ahead_kb\" 2>/dev/null" >> anykernel.sh
-          echo "  fi" >> anykernel.sh
-          echo "done" >> anykernel.sh
           echo "INNER_EOF" >> anykernel.sh
           echo "  " >> anykernel.sh
           echo "  chmod 755 /data/adb/service.d/epitaph_tuner.sh;" >> anykernel.sh
