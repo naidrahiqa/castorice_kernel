@@ -245,49 +245,12 @@ jobs:
             fi
           fi
 
-          # LANGKAH 4: Integrasikan KernelSU-Next untuk SUSFS menggunakan patch resmi
+          # LANGKAH 4: Integrasikan KernelSU-Next untuk SUSFS menggunakan pershoot fork yang sudah terintegrasi
           KSU_KERNEL="drivers/kernelsu"
-          SUSFS_INTEGRATED=false
           if [ -d "$KSU_KERNEL" ]; then
-            echo "   Applying SUSFS patch to KernelSU/KernelSU-Next..."
-            
-            # Temukan berkas patch di dalam susfs4ksu
-            KSU_PATCH=""
-            for p in \
-              "../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
-              "../susfs4ksu/kernel_patches/10_enable_susfs_for_ksu.patch"; do
-              if [ -f "$p" ]; then
-                KSU_PATCH="$p"
-                break
-              fi
-            done
+            # pershoot/next-susfs already has KSU SUSFS hooks — skip KSU patch
+            echo "ℹ️ Using pershoot/next-susfs — KSU SUSFS hooks pre-integrated, skipping 10_enable_susfs_for_ksu.patch"
 
-            if [ -n "$KSU_PATCH" ]; then
-              cd "$KSU_KERNEL"
-              if git apply --check "$KSU_PATCH" 2>/dev/null; then
-                git apply "$KSU_PATCH" && echo "   ✅ KernelSU SUSFS patch applied via git apply"
-              else
-                echo "   ⚠️ git apply failed for KernelSU, trying patch command..."
-                if patch -p1 --forward --fuzz=3 --dry-run < "$KSU_PATCH" >/dev/null 2>&1; then
-                  patch -p1 --forward --fuzz=3 < "$KSU_PATCH" && echo "   ✅ KernelSU SUSFS patch applied via patch"
-                else
-                  echo "   ❌ KernelSU SUSFS patch failed to apply cleanly. Attempting manual fallback..."
-                fi
-              fi
-              cd ../..
-            else
-              echo "   ⚠️ KernelSU SUSFS patch file not found, skipping patch application"
-            fi
-
-            # Fallback manual injection jika KSU init.c belum ter-patch
-            INIT_C=$(find drivers/kernelsu -name 'init.c' | head -n1)
-            if [ -f "$INIT_C" ] && ! grep -q 'susfs_init' "$INIT_C"; then
-              echo "   Applying manual susfs_init() fallback injection into $INIT_C..."
-              sed -i '1i #include <linux/susfs.h>' "$INIT_C"
-              python3 -c "import re, sys; c=open('$INIT_C').read(); c,n=re.subn(r'(int __init kernelsu_init\(void\)\s*\{)',r'\1\n#ifdef CONFIG_KSU_SUSFS\n\tsusfs_init();\n#endif',c); open('$INIT_C','w').write(c); sys.exit(0 if n else 1)"
-              echo "   ✅ Manual susfs_init() fallback injection complete"
-            fi
-            
             # Pastikan Git melacak semua perubahan di drivers/kernelsu agar terdeteksi Bazel Kleaf sandbox
             git add -f drivers/kernelsu/ 2>/dev/null || true
 
@@ -321,7 +284,15 @@ jobs:
             fi
 
             git add "$KSU_KERNEL/Makefile" "$KSU_KERNEL/Kconfig" 2>/dev/null || true
-            grep -q "config KSU_SUSFS" "$KSU_KERNEL/Kconfig" 2>/dev/null && SUSFS_INTEGRATED=true
+          fi
+
+          # Don't check Kconfig we wrote ourselves — check actual patched source
+          SUSFS_INTEGRATED=false
+          if [ "$SUSFS_PATCH_APPLIED" = "true" ] \
+            && [ -f "fs/susfs.c" ] \
+            && [ -f "include/linux/susfs.h" ] \
+            && grep -q "susfs" drivers/kernelsu/hooks.c 2>/dev/null; then
+            SUSFS_INTEGRATED=true
           fi
 
           echo "SUSFS_OK=$SUSFS_INTEGRATED" >> $GITHUB_ENV
@@ -345,6 +316,14 @@ jobs:
               for rej in $NON_CRIT_REJ; do echo "   - $rej"; done
               find . -name "*.rej" -delete 2>/dev/null || true
             fi
+
+            # CRITICAL: Commit all SUSFS changes so Bazel Kleaf sandbox can see them
+            cd "$GITHUB_WORKSPACE/kernel/common"
+            git -c user.email="ci@epitaph" -c user.name="Epitaph CI" \
+              commit -m "ci: integrate SUSFS $(cat include/linux/susfs.h | grep SUSFS_VERSION | head -1 | awk '{print $3}' || echo 'unknown')" \
+              --allow-empty 2>/dev/null || true
+            echo "✅ SUSFS changes committed to git HEAD — visible to Bazel sandbox"
+
             echo "✅ SUSFS integration complete"
           fi
 

@@ -268,8 +268,8 @@ set_kmi() {
 setup_ksu() {
   cd kernel
 
-  echo "Cloning KernelSU-Next (full history for version calc)..."
-  git clone https://github.com/KernelSU-Next/KernelSU-Next.git -b dev KernelSU-Next
+  echo "Cloning KernelSU-Next (pershoot fork next-susfs branch)..."
+  git clone https://github.com/pershoot/KernelSU-Next -b next-susfs KernelSU-Next
 
   if [ ! -d "KernelSU-Next/kernel" ]; then
     echo "❌ ERROR: KernelSU-Next/kernel/ directory not found!"
