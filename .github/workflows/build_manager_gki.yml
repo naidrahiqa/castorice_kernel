@@ -132,7 +132,7 @@ jobs:
 
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           
-          MESSAGE=$(printf '<b>🚀 Epitaph Kernel — Build Starting</b>\n\n<b>Developer:</b> Naidrahiqa\n<b>Release Tag:</b> %s\n<b>SUSFS Variant:</b> %s\n<b>Toolchain:</b> %s\n<b>Total Builds:</b> %s\n<b>Triggered by:</b> %s\n\n<a href="%s">🔍 Monitor Build Progress on GitHub Actions</b>' \
+          MESSAGE=$(printf '<b>🚀 Epitaph Kernel — Build Starting</b>\n\n<b>Developer:</b> Naidrahiqa\n<b>Release Tag:</b> %s\n<b>SUSFS Variant:</b> %s\n<b>Toolchain:</b> %s\n<b>Total Builds:</b> %s\n<b>Triggered by:</b> %s\n\n<a href="%s">🔍 Monitor Build Progress on GitHub Actions</a>' \
             "${{ inputs.release_tag }}" "$VARIANTS" "${{ inputs.toolchain }}" "${{ needs.prepare.outputs.total }}" "${{ github.actor }}" "$RUN_URL")
           
           echo "Sending to Chat ID: ${TG_CHAT_ID}"
