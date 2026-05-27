@@ -52,7 +52,8 @@ log_msg "Section 1: WiFi Module Recovery System starting..."
 # Helper: load module with error logging
 try_load_module() {
   local mod_path="$1"
-  local mod_name=$(basename "$mod_path" .ko)
+  local filename="${mod_path##*/}"
+  local mod_name="${filename%.ko}"
   if [ ! -f "$mod_path" ]; then
     log_msg "  [SKIP] $mod_path not found"
     return 1
