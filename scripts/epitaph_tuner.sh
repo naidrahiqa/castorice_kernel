@@ -45,27 +45,115 @@ cat << 'EOF' > "$APPLY_FILE"
 EOF
 chmod 755 "$APPLY_FILE" 2>/dev/null
 
-# 1. FALLBACK WIFI MODULE LOADER
-# Ensures 100% WiFi/Hotspot reliability if systemless module loading fails
-log_msg "Section 1: Checking WiFi module fallback..."
-if ! lsmod | grep -q cfg80211; then
-  log_msg "WiFi module not loaded, attempting fallback loading..."
-  if [ -d /data/adb/wifi_fix ]; then
-    insmod /data/adb/wifi_fix/rfkill.ko 2>/dev/null
-    insmod /data/adb/wifi_fix/libarc4.ko 2>/dev/null
-    insmod /data/adb/wifi_fix/cfg80211.ko 2>/dev/null
-    insmod /data/adb/wifi_fix/mac80211.ko 2>/dev/null
-    if lsmod | grep -q cfg80211; then
-      log_msg "Fallback WiFi module successfully loaded"
-    else
-      log_msg "Fallback WiFi module failed to load"
-    fi
+# 1. COMPREHENSIVE WIFI MODULE LOADER & RECOVERY
+# Handles full module dependency chain + vendor WiFi driver + service restart
+log_msg "Section 1: WiFi Module Recovery System starting..."
+
+# Helper: load module with error logging
+try_load_module() {
+  local mod_path="$1"
+  local mod_name=$(basename "$mod_path" .ko)
+  if [ ! -f "$mod_path" ]; then
+    log_msg "  [SKIP] $mod_path not found"
+    return 1
+  fi
+  if lsmod | grep -q "^${mod_name}"; then
+    log_msg "  [OK] $mod_name already loaded"
+    return 0
+  fi
+  local err
+  err=$(insmod "$mod_path" 2>&1)
+  if [ $? -eq 0 ]; then
+    log_msg "  [LOADED] $mod_name from $mod_path"
+    return 0
   else
-    log_msg "/data/adb/wifi_fix directory not found, fallback unavailable"
+    log_msg "  [FAIL] $mod_name: $err"
+    return 1
+  fi
+}
+
+# Tahap 1A: Load framework WiFi kernel modules (cfg80211 + mac80211)
+CFG_LOADED=false
+if lsmod | grep -q cfg80211; then
+  log_msg "cfg80211 already loaded by init"
+  CFG_LOADED=true
+else
+  log_msg "cfg80211 NOT loaded — attempting manual load..."
+  # Cari cfg80211.ko dari beberapa lokasi yang mungkin
+  for search_dir in \
+    /vendor/lib/modules \
+    /vendor_dlkm/lib/modules \
+    /data/adb/wifi_fix \
+    /system_dlkm/lib/modules \
+    /lib/modules; do
+    if [ -f "$search_dir/cfg80211.ko" ]; then
+      # Load dependency dulu: rfkill dan libarc4
+      try_load_module "$search_dir/rfkill.ko"
+      try_load_module "$search_dir/libarc4.ko"
+      try_load_module "$search_dir/cfg80211.ko"
+      if lsmod | grep -q cfg80211; then
+        CFG_LOADED=true
+        log_msg "cfg80211 loaded from $search_dir"
+        # Load mac80211 dari lokasi yang sama
+        try_load_module "$search_dir/mac80211.ko"
+        break
+      fi
+    fi
+  done
+fi
+
+# Tahap 1B: Load vendor WiFi driver (wlan_drv_gen4m.ko untuk MTK Helio G88)
+WLAN_LOADED=false
+if lsmod | grep -q wlan_drv_gen4m; then
+  log_msg "Vendor WiFi driver (wlan_drv_gen4m) already loaded"
+  WLAN_LOADED=true
+elif [ "$CFG_LOADED" = "true" ]; then
+  log_msg "Loading vendor WiFi driver..."
+  for wlan_dir in \
+    /vendor/lib/modules \
+    /vendor_dlkm/lib/modules; do
+    if [ -f "$wlan_dir/wlan_drv_gen4m.ko" ]; then
+      try_load_module "$wlan_dir/wlan_drv_gen4m.ko"
+      if lsmod | grep -q wlan_drv_gen4m; then
+        WLAN_LOADED=true
+        log_msg "Vendor WiFi driver loaded from $wlan_dir"
+        break
+      fi
+    fi
+  done
+  # Fallback: coba modprobe jika insmod gagal
+  if [ "$WLAN_LOADED" = "false" ]; then
+    log_msg "insmod gagal, mencoba modprobe wlan_drv_gen4m..."
+    modprobe wlan_drv_gen4m 2>/dev/null && WLAN_LOADED=true && log_msg "modprobe wlan_drv_gen4m berhasil"
+  fi
+fi
+
+# Tahap 1C: Restart WiFi framework jika modul berhasil di-load manual
+if [ "$CFG_LOADED" = "true" ]; then
+  # Cek apakah wlan interface sudah muncul
+  WLAN_IFACE=$(getprop wifi.interface 2>/dev/null)
+  WLAN_STATUS=$(getprop wlan.driver.status 2>/dev/null)
+  log_msg "WiFi interface: ${WLAN_IFACE:-none}, driver status: ${WLAN_STATUS:-unknown}"
+
+  if [ "$WLAN_STATUS" != "ok" ]; then
+    log_msg "WiFi driver status not OK, attempting service restart..."
+    # Restart WiFi supplicant dan connectivity services
+    svc wifi disable 2>/dev/null
+    sleep 1
+    svc wifi enable 2>/dev/null
+    sleep 2
+    WLAN_STATUS_AFTER=$(getprop wlan.driver.status 2>/dev/null)
+    log_msg "WiFi status after restart: ${WLAN_STATUS_AFTER:-unknown}"
   fi
 else
-  log_msg "WiFi module (cfg80211) already loaded by systemless loader"
+  log_msg "WARNING: cfg80211 FAILED to load from any location!"
+  log_msg "WiFi dan Hotspot TIDAK akan berfungsi."
+  log_msg "Dump lsmod saat ini:"
+  lsmod >> "$LOG_FILE" 2>/dev/null
 fi
+
+# Log status akhir
+log_msg "WiFi Recovery Summary: cfg80211=$CFG_LOADED, wlan_vendor=$WLAN_LOADED"
 
 # 2. CPU SCHEDUTIL GOVERNOR OPTIMIZATIONS
 # Smooths UI transitions & eliminates micro-stutters based on active profile

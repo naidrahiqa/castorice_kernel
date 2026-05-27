@@ -1,10 +1,37 @@
 import os
 import re
 
+def patch_function_body(content, func_pattern, replacement_body, func_name):
+    """Replace the body of a function matching func_pattern with replacement_body.
+    Returns (new_content, was_patched)."""
+    match = re.search(func_pattern, content)
+    if not match:
+        return content, False
+
+    start_idx = match.end()
+    brace_count = 1
+    end_idx = start_idx
+
+    while brace_count > 0 and end_idx < len(content):
+        char = content[end_idx]
+        if char == '{':
+            brace_count += 1
+        elif char == '}':
+            brace_count -= 1
+        end_idx += 1
+
+    if brace_count == 0:
+        content = content[:start_idx] + replacement_body + content[end_idx-1:]
+        print(f"  ✅ Patched {func_name}")
+        return content, True
+
+    return content, False
+
+
 def main():
-    print("⏳ Running Vermagic Bypass Patch...")
-    
-    # Berkas potensial tempat fungsi same_magic berada di kernel Linux 6.6 / 6.1 / 5.15
+    print("⏳ Running Comprehensive Vermagic & Module Version Bypass Patch...")
+
+    # All potential files where vermagic/modversion checks exist in GKI 6.6
     files_to_check = [
         "kernel/module/internal.h",
         "kernel/module/main.c",
@@ -15,47 +42,72 @@ def main():
         "common/kernel/module/version.c",
         "common/kernel/module.c"
     ]
-    
-    patched = False
-    
+
+    patches_applied = 0
+
     for filepath in files_to_check:
-        if os.path.exists(filepath):
-            print(f"🔍 Menemukan berkas target: {filepath}")
-            with open(filepath, "r") as f:
-                content = f.read()
-                
-            # Regex untuk mencari deklarasi same_magic (static inline atau biasa, return int atau bool)
-            # beserta isi kurung kurawalnya yang terkadang mencakup multiline
-            match = re.search(r"(?:static\s+inline\s+)?(?:int|bool)\s+same_magic\s*\([^)]*\)\s*\{", content)
-            if match:
-                print(f"🎯 Menemukan fungsi same_magic pada {filepath}!")
-                
-                # Kita cari kurung kurawal tutup pasangan dari '{' tersebut
-                start_idx = match.end()
-                brace_count = 1
-                end_idx = start_idx
-                
-                while brace_count > 0 and end_idx < len(content):
-                    char = content[end_idx]
-                    if char == '{':
-                        brace_count += 1
-                    elif char == '}':
-                        brace_count -= 1
-                    end_idx += 1
-                
-                if brace_count == 0:
-                    # Kita ganti seluruh isi tubuh fungsi same_magic dengan "return 1;" secara absolut!
-                    new_body = "\n\treturn 1;\n"
-                    content = content[:start_idx] + new_body + content[end_idx-1:]
-                    
-                    with open(filepath, "w") as f:
-                        f.write(content)
-                    print(f"✅ Berhasil mem-patch same_magic pada {filepath}!")
-                    patched = True
-                    break
-                    
-    if not patched:
-        print("⚠️ Peringatan: Tidak dapat menemukan fungsi same_magic untuk di-patch.")
+        if not os.path.exists(filepath):
+            continue
+
+        print(f"🔍 Scanning: {filepath}")
+        with open(filepath, "r") as f:
+            content = f.read()
+        
+        original = content
+        file_patched = False
+
+        # PATCH 1: same_magic() — always return 1 (versions match)
+        # This is the primary vermagic string comparison check
+        content, p = patch_function_body(
+            content,
+            r"(?:static\s+inline\s+)?(?:int|bool)\s+same_magic\s*\([^)]*\)\s*\{",
+            "\n\treturn 1;\n",
+            "same_magic()"
+        )
+        file_patched = file_patched or p
+
+        # PATCH 2: check_modinfo() — always return 0 (no error)
+        # Secondary check that validates vermagic string via modinfo section
+        content, p = patch_function_body(
+            content,
+            r"(?:static\s+)?int\s+check_modinfo\s*\([^)]*\)\s*\{",
+            "\n\treturn 0;\n",
+            "check_modinfo()"
+        )
+        file_patched = file_patched or p
+
+        # PATCH 3: check_version() — always return true/1
+        # CRC symbol version check (CONFIG_MODVERSIONS)
+        # This prevents "disagrees about version of symbol" errors
+        content, p = patch_function_body(
+            content,
+            r"(?:static\s+)?(?:int|bool)\s+check_version\s*\([^)]*\)\s*\{",
+            "\n\treturn 1;\n",
+            "check_version()"
+        )
+        file_patched = file_patched or p
+
+        # PATCH 4: check_modstruct_version() — always return true/1
+        # Module struct version check
+        content, p = patch_function_body(
+            content,
+            r"(?:static\s+)?(?:int|bool)\s+check_modstruct_version\s*\([^)]*\)\s*\{",
+            "\n\treturn 1;\n",
+            "check_modstruct_version()"
+        )
+        file_patched = file_patched or p
+
+        if file_patched:
+            with open(filepath, "w") as f:
+                f.write(content)
+            patches_applied += 1
+            print(f"✅ Saved patches to {filepath}")
+
+    if patches_applied > 0:
+        print(f"\n✅ Vermagic/modversion bypass applied to {patches_applied} file(s)")
+    else:
+        print("\n⚠️ WARNING: No vermagic/modversion functions found to patch!")
+        print("   Stock Xiaomi vendor modules (wlan_drv_gen4m.ko) may fail to load!")
 
 if __name__ == "__main__":
     main()
