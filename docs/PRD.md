@@ -152,11 +152,11 @@ Trigger: workflow_dispatch (manual)
 
 Sistem profil runtime via `/data/adb/epitaph/mode`:
 
-| Profil | up_rate | down_rate | GPU | Swappiness | Use Case |
-|---|---|---|---|---|---|
-| `performance` | 100µs | 50ms | always_on + boost | 200 | Gaming |
-| `balanced` | 2ms | 20ms | dynamic | 180 | Daily driver (default) |
-| `battery` | 10ms | 5ms | coarse_demand | 160 | Hemat baterai |
+| Profil | up_rate | down_rate | GPU | Swappiness | Uclamp.min | Use Case |
+|---|---|---|---|---|---|---|
+| `performance` | 100µs | 40ms | always_on + GED boost | 200 | 180 (responsive) | Gaming / Max Performance |
+| `balanced` | 500µs | 10ms | dynamic + GED boost | 180 | 64 (smooth UI) | Daily driver (default) |
+| `battery` | 2ms | 1ms | coarse_demand | 160 | 0 (battery save) | Hemat baterai / Standby |
 
 Ganti profil tanpa reflash:
 ```sh

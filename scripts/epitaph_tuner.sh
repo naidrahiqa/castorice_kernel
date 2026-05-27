@@ -4,21 +4,23 @@
 #  Designed by Naidrahiqa & Antigravity AI
 #  Epitaph Kernel — Redmi 12 (fire) — GKI 6.6
 # ==============================================================================
-# This file is placed at /data/adb/service.d/epitaph_tuner.sh by AnyKernel3
-# It runs at every boot via KernelSU/Magisk service.d
+# File ini diletakkan di /data/adb/service.d/epitaph_tuner.sh oleh AnyKernel3
+# Berjalan setiap boot via KernelSU/Magisk service.d
 # ==============================================================================
 
 sleep 5
 
 LOG_FILE="/data/local/tmp/epitaph_tuner.log"
+STATUS_FILE="/data/adb/epitaph/status"
 mkdir -p /data/local/tmp 2>/dev/null
+mkdir -p /data/adb/epitaph 2>/dev/null
 chmod 644 "$LOG_FILE" 2>/dev/null
 
 log_msg() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
-# Helper: write to sysfs/procfs safely and silently without console warnings
+# Helper: menulis ke sysfs/procfs secara aman tanpa warning
 write_value() {
   local val="$1"
   local target="$2"
@@ -27,7 +29,7 @@ write_value() {
   fi
 }
 
-# Helper: copy file content safely and silently
+# Helper: menyalin konten berkas secara aman
 copy_value() {
   local src="$1"
   local target="$2"
@@ -38,8 +40,7 @@ copy_value() {
 
 log_msg "=== EPITAPH TUNER STARTED ==="
 
-# Initialize Epitaph Schedutil Performance profile folder and files
-mkdir -p /data/adb/epitaph 2>/dev/null
+# Inisialisasi folder profil Epitaph Schedutil Performance
 MODE_FILE="/data/adb/epitaph/mode"
 APPLY_FILE="/data/adb/epitaph/apply"
 
@@ -53,37 +54,37 @@ if [ "$MODE" != "performance" ] && [ "$MODE" != "balanced" ] && [ "$MODE" != "ba
   MODE="balanced"
 fi
 
-log_msg "Selected Schedutil Profile: $MODE"
+log_msg "Selected Profile: $MODE"
 
-# Create trigger script to re-apply real-time without reboot
+# Membuat skrip trigger untuk apply real-time tanpa reboot
 cat << 'EOF' > "$APPLY_FILE"
 #!/system/bin/sh
-# Trigger re-apply Epitaph Schedutil profile real-time without reboot
+# Trigger re-apply Epitaph Schedutil profile real-time tanpa reboot
 /system/bin/sh /data/adb/service.d/epitaph_tuner.sh
 EOF
 chmod 755 "$APPLY_FILE" 2>/dev/null
 
+# ──────────────────────────────────────────────────────────────────────────────
 # 1. COMPREHENSIVE WIFI MODULE LOADER & RECOVERY
-# Handles full module dependency chain + vendor WiFi driver + service restart
+# ──────────────────────────────────────────────────────────────────────────────
 log_msg "Section 1: WiFi Module Recovery System starting..."
 
-# Helper: load module with error logging
 try_load_module() {
   local mod_path="$1"
   local filename="${mod_path##*/}"
   local mod_name="${filename%.ko}"
   if [ ! -f "$mod_path" ]; then
-    log_msg "  [SKIP] $mod_path not found"
+    log_msg "  [SKIP] $mod_path tidak ditemukan"
     return 1
   fi
   if lsmod | grep -q "^${mod_name}"; then
-    log_msg "  [OK] $mod_name already loaded"
+    log_msg "  [OK] $mod_name sudah termuat"
     return 0
   fi
   local err
   err=$(insmod "$mod_path" 2>&1)
   if [ $? -eq 0 ]; then
-    log_msg "  [LOADED] $mod_name from $mod_path"
+    log_msg "  [LOADED] $mod_name dari $mod_path"
     return 0
   else
     log_msg "  [FAIL] $mod_name: $err"
@@ -91,14 +92,12 @@ try_load_module() {
   fi
 }
 
-# Tahap 1A: Load framework WiFi kernel modules (cfg80211 + mac80211)
 CFG_LOADED=false
 if lsmod | grep -q cfg80211; then
-  log_msg "cfg80211 already loaded by init"
+  log_msg "cfg80211 sudah termuat oleh init"
   CFG_LOADED=true
 else
-  log_msg "cfg80211 NOT loaded — attempting manual load..."
-  # Cari cfg80211.ko dari beberapa lokasi yang mungkin
+  log_msg "cfg80211 BELUM termuat — mencoba memuat secara manual..."
   for search_dir in \
     /vendor/lib/modules \
     /vendor_dlkm/lib/modules \
@@ -106,14 +105,12 @@ else
     /system_dlkm/lib/modules \
     /lib/modules; do
     if [ -f "$search_dir/cfg80211.ko" ]; then
-      # Load dependency dulu: rfkill dan libarc4
       try_load_module "$search_dir/rfkill.ko"
       try_load_module "$search_dir/libarc4.ko"
       try_load_module "$search_dir/cfg80211.ko"
       if lsmod | grep -q cfg80211; then
         CFG_LOADED=true
-        log_msg "cfg80211 loaded from $search_dir"
-        # Load mac80211 dari lokasi yang sama
+        log_msg "cfg80211 berhasil dimuat dari $search_dir"
         try_load_module "$search_dir/mac80211.ko"
         break
       fi
@@ -121,13 +118,12 @@ else
   done
 fi
 
-# Tahap 1B: Load vendor WiFi driver (wlan_drv_gen4m atau wlan_drv_gen4m_6768 untuk MTK Helio G88)
 WLAN_LOADED=false
 if lsmod | grep -qE "wlan_drv_gen4m"; then
-  log_msg "Vendor WiFi driver (wlan_drv_gen4m/6768) already loaded"
+  log_msg "Vendor WiFi driver (wlan_drv_gen4m/6768) sudah termuat"
   WLAN_LOADED=true
 elif [ "$CFG_LOADED" = "true" ]; then
-  log_msg "Loading vendor WiFi driver..."
+  log_msg "Memuat vendor WiFi driver..."
   for wlan_dir in \
     /vendor/lib/modules \
     /vendor_dlkm/lib/modules; do
@@ -136,13 +132,12 @@ elif [ "$CFG_LOADED" = "true" ]; then
         try_load_module "$wlan_dir/$wlan_file"
         if lsmod | grep -qE "wlan_drv_gen4m"; then
           WLAN_LOADED=true
-          log_msg "Vendor WiFi driver ($wlan_file) loaded from $wlan_dir"
+          log_msg "Vendor WiFi driver ($wlan_file) termuat dari $wlan_dir"
           break 2
         fi
       fi
     done
   done
-  # Fallback: coba modprobe jika insmod gagal
   if [ "$WLAN_LOADED" = "false" ]; then
     log_msg "insmod gagal, mencoba modprobe wlan_drv_gen4m_6768..."
     modprobe wlan_drv_gen4m_6768 2>/dev/null && WLAN_LOADED=true && log_msg "modprobe wlan_drv_gen4m_6768 berhasil"
@@ -153,36 +148,31 @@ elif [ "$CFG_LOADED" = "true" ]; then
   fi
 fi
 
-# Tahap 1C: Restart WiFi framework jika modul berhasil di-load manual
 if [ "$CFG_LOADED" = "true" ]; then
-  # Cek apakah wlan interface sudah muncul
   WLAN_IFACE=$(getprop wifi.interface 2>/dev/null)
   WLAN_STATUS=$(getprop wlan.driver.status 2>/dev/null)
   log_msg "WiFi interface: ${WLAN_IFACE:-none}, driver status: ${WLAN_STATUS:-unknown}"
 
   if [ "$WLAN_STATUS" != "ok" ]; then
-    log_msg "WiFi driver status not OK, attempting service restart..."
-    # Restart WiFi supplicant dan connectivity services
+    log_msg "WiFi driver status tidak OK, melakukan restart service..."
     svc wifi disable 2>/dev/null
     sleep 1
     svc wifi enable 2>/dev/null
     sleep 2
     WLAN_STATUS_AFTER=$(getprop wlan.driver.status 2>/dev/null)
-    log_msg "WiFi status after restart: ${WLAN_STATUS_AFTER:-unknown}"
+    log_msg "WiFi status setelah restart: ${WLAN_STATUS_AFTER:-unknown}"
   fi
 else
-  log_msg "WARNING: cfg80211 FAILED to load from any location!"
-  log_msg "WiFi dan Hotspot TIDAK akan berfungsi."
-  log_msg "Dump lsmod saat ini:"
+  log_msg "WARNING: cfg80211 GAGAL dimuat! WiFi/Hotspot tidak akan berfungsi."
   lsmod >> "$LOG_FILE" 2>/dev/null
 fi
 
-# Log status akhir
 log_msg "WiFi Recovery Summary: cfg80211=$CFG_LOADED, wlan_vendor=$WLAN_LOADED"
 
+# ──────────────────────────────────────────────────────────────────────────────
 # 2. CPU SCHEDUTIL GOVERNOR OPTIMIZATIONS
-# Smooths UI transitions & eliminates micro-stutters based on active profile
-log_msg "Section 2: Tuning CPU Schedutil governors for profile: $MODE"
+# ──────────────────────────────────────────────────────────────────────────────
+log_msg "Section 2: Tuning CPU Schedutil governors untuk profil: $MODE"
 
 UP_RATE=500
 DOWN_RATE=10000
@@ -213,42 +203,180 @@ for policy in /sys/devices/system/cpu/cpufreq/policy*; do
   fi
 done
 
-# 3. GPU GED & MALI LIMITER RESET
-# Fixes GPU frequency locks / MTK thermal driver throttle bugs
-log_msg "Section 3: Optimizing GPU settings..."
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. DYNAMIC GPU TUNING (GED & MALI CONTROLS)
+# ──────────────────────────────────────────────────────────────────────────────
+log_msg "Section 3: Mengoptimalkan GPU secara dinamis untuk profil: $MODE..."
+
+GPU_BOOST=0
+BOOST_GPU_ENABLE=0
+MALI_POWER_POLICY="dynamic"
+
+case "$MODE" in
+  performance)
+    GPU_BOOST=1
+    BOOST_GPU_ENABLE=1
+    MALI_POWER_POLICY="always_on"
+    ;;
+  battery)
+    GPU_BOOST=0
+    BOOST_GPU_ENABLE=0
+    MALI_POWER_POLICY="coarse_demand"
+    ;;
+  balanced|*)
+    GPU_BOOST=0
+    BOOST_GPU_ENABLE=1
+    MALI_POWER_POLICY="dynamic"
+    ;;
+esac
+
+# Terapkan konfigurasi GED (GPU Execution Daemon) MTK
 if [ -d /sys/kernel/ged/hal ]; then
-  write_value 1 /sys/kernel/ged/hal/gpu_boost
-  write_value 1 /sys/module/ged/parameters/boost_gpu_enable
-  log_msg "GED GPU boost enabled"
+  write_value "$GPU_BOOST" /sys/kernel/ged/hal/gpu_boost
+  write_value "$BOOST_GPU_ENABLE" /sys/module/ged/parameters/boost_gpu_enable
+  log_msg "GED GPU settings applied: gpu_boost=$GPU_BOOST, boost_gpu_enable=$BOOST_GPU_ENABLE"
 fi
+
+# Terapkan Mali GPU driver power policy
 for mali_dir in /sys/class/misc/mali0/device /sys/devices/platform/*.mali; do
   if [ -d "$mali_dir" ]; then
-    write_value "dynamic" "$mali_dir/power_policy"
-    if [ -f "$mali_dir/dvfs_max_freq" ]; then
-      if [ -f "$mali_dir/dvfs_max_freq_khz" ]; then
-        copy_value "$mali_dir/dvfs_max_freq_khz" "$mali_dir/dvfs_max_freq"
-      elif [ -f "$mali_dir/max_clock" ]; then
-        copy_value "$mali_dir/max_clock" "$mali_dir/dvfs_max_freq"
+    write_value "$MALI_POWER_POLICY" "$mali_dir/power_policy"
+    
+    # Jika di mode performance, buka limit frekuensi GPU ke maksimum
+    if [ "$MODE" = "performance" ]; then
+      if [ -f "$mali_dir/dvfs_max_freq" ]; then
+        if [ -f "$mali_dir/dvfs_max_freq_khz" ]; then
+          copy_value "$mali_dir/dvfs_max_freq_khz" "$mali_dir/dvfs_max_freq"
+        elif [ -f "$mali_dir/max_clock" ]; then
+          copy_value "$mali_dir/max_clock" "$mali_dir/dvfs_max_freq"
+        fi
       fi
     fi
-    log_msg "Mali GPU policy set to dynamic & maximum frequency locked for $mali_dir"
+    log_msg "Mali GPU power_policy set to $MALI_POWER_POLICY for $mali_dir"
   fi
 done
 
-# 4. MEMORY & VIRTUAL MEMORY TUNING
-# Resolves high RAM consumption, prevents OOM & background app kills
-log_msg "Section 4: Tuning Memory & Virtual Memory..."
-write_value 180 /proc/sys/vm/swappiness && log_msg "Swappiness set to 180"
-write_value 100 /proc/sys/vm/vfs_cache_pressure && log_msg "vfs_cache_pressure set to 100"
-write_value 20 /proc/sys/vm/dirty_ratio && log_msg "dirty_ratio set to 20"
-write_value 5 /proc/sys/vm/dirty_background_ratio && log_msg "dirty_background_ratio set to 5"
-if [ -e /dev/block/zram0 ]; then
-  write_value 2 /sys/block/zram0/max_comp_streams && log_msg "zram0 max_comp_streams set to 2"
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. CPU UCLAMP DYNAMIC TUNING (MEMPERBAIKI DEEP SLEEP / DRAIN BATRE)
+# ──────────────────────────────────────────────────────────────────────────────
+# Masalah: uclamp.min di-set ke 1024 (maksimum) memaksa CPU berjalan pada clock tertinggi,
+# menghalangi CPU masuk ke mode deep sleep. Kita reset & set nilai uclamp secara dinamis.
+log_msg "Section 4: Menyetel CPU Uclamp secara dinamis untuk profil: $MODE"
+
+UCLAMP_MIN_TOP_APP=64
+UCLAMP_MIN_FOREGROUND=16
+UCLAMP_MIN_BACKGROUND=0
+UCLAMP_MIN_SYSTEM_BACKGROUND=0
+UCLAMP_MIN_GLOBAL=0
+
+case "$MODE" in
+  performance)
+    # Memberikan dorongan UI responsif, tetapi batasi maksimal 180 (tidak 1024!) agar deep sleep tidak mati
+    UCLAMP_MIN_TOP_APP=180
+    UCLAMP_MIN_FOREGROUND=64
+    UCLAMP_MIN_BACKGROUND=0
+    UCLAMP_MIN_SYSTEM_BACKGROUND=0
+    UCLAMP_MIN_GLOBAL=0
+    ;;
+  battery)
+    # Maksimalkan penghematan batre, matikan uclamp min
+    UCLAMP_MIN_TOP_APP=0
+    UCLAMP_MIN_FOREGROUND=0
+    UCLAMP_MIN_BACKGROUND=0
+    UCLAMP_MIN_SYSTEM_BACKGROUND=0
+    UCLAMP_MIN_GLOBAL=0
+    ;;
+  balanced|*)
+    # Nilai optimal untuk harian, hemat baterai dengan UI tetap mulus
+    UCLAMP_MIN_TOP_APP=64
+    UCLAMP_MIN_FOREGROUND=16
+    UCLAMP_MIN_BACKGROUND=0
+    UCLAMP_MIN_SYSTEM_BACKGROUND=0
+    UCLAMP_MIN_GLOBAL=0
+    ;;
+esac
+
+# Terapkan Uclamp ke cgroup scheduler Android
+write_value "$UCLAMP_MIN_GLOBAL" /dev/cpuctl/cpu.uclamp.min
+write_value "$UCLAMP_MIN_TOP_APP" /dev/cpuctl/top-app/cpu.uclamp.min
+write_value "$UCLAMP_MIN_FOREGROUND" /dev/cpuctl/foreground/cpu.uclamp.min
+write_value "$UCLAMP_MIN_BACKGROUND" /dev/cpuctl/background/cpu.uclamp.min
+write_value "$UCLAMP_MIN_SYSTEM_BACKGROUND" /dev/cpuctl/system-background/cpu.uclamp.min
+
+# Pastikan uclamp max tetap di 1024 agar CPU dapat naik ke frekuensi penuh saat dibutuhkan
+write_value 1024 /dev/cpuctl/cpu.uclamp.max
+write_value 1024 /dev/cpuctl/top-app/cpu.uclamp.max
+write_value 1024 /dev/cpuctl/foreground/cpu.uclamp.max
+write_value 1024 /dev/cpuctl/background/cpu.uclamp.max
+write_value 1024 /dev/cpuctl/system-background/cpu.uclamp.max
+
+log_msg "Uclamp Min applied: global=$UCLAMP_MIN_GLOBAL, top-app=$UCLAMP_MIN_TOP_APP, foreground=$UCLAMP_MIN_FOREGROUND"
+
+# Matikan logging suspend berlebih untuk mempercepat masuk deep sleep
+write_value 0 /sys/module/wakeup/parameters/enable_wakeup_log
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5. ZRAM & VIRTUAL MEMORY TUNING
+# ──────────────────────────────────────────────────────────────────────────────
+# Konfigurasi: ZRAM 6GB, compressor lzo-rle, swappiness dinamis, dirty ratio 20
+log_msg "Section 5: Tuning ZRAM & Virtual Memory..."
+
+ZRAM_TARGET_SIZE=6442450944  # 6GB dalam Bytes
+ZRAM_COMPRESSOR="lzo-rle"
+
+# Cek kondisi ZRAM saat ini agar tidak melakukan write lambat jika sudah sesuai
+CURR_SIZE=$(cat /sys/block/zram0/disksize 2>/dev/null || echo "0")
+CURR_COMP=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | grep -o '\[.*\]' | tr -d '[]')
+
+if [ "$CURR_SIZE" != "$ZRAM_TARGET_SIZE" ] || [ "$CURR_COMP" != "$ZRAM_COMPRESSOR" ]; then
+  log_msg "ZRAM tidak cocok (Size: $CURR_SIZE vs $ZRAM_TARGET_SIZE, Comp: $CURR_COMP vs $ZRAM_COMPRESSOR). Membangun ulang ZRAM..."
+  swapoff /dev/block/zram0 2>/dev/null || true
+  write_value 1 /sys/block/zram0/reset
+  
+  # Set kompresor lzo-rle
+  if grep -q "$ZRAM_COMPRESSOR" /sys/block/zram0/comp_algorithm 2>/dev/null; then
+    write_value "$ZRAM_COMPRESSOR" /sys/block/zram0/comp_algorithm
+    log_msg "ZRAM compressor set ke $ZRAM_COMPRESSOR"
+  else
+    # Fallback ke lz4 jika lzo-rle tidak ada di kernel compile config
+    write_value "lz4" /sys/block/zram0/comp_algorithm
+    log_msg "ZRAM compressor lzo-rle tidak didukung, menggunakan lz4"
+  fi
+  
+  write_value "$ZRAM_TARGET_SIZE" /sys/block/zram0/disksize
+  write_value 2 /sys/block/zram0/max_comp_streams
+  mkswap /dev/block/zram0 2>/dev/null || true
+  swapon /dev/block/zram0 -p 32767 2>/dev/null || true
+  log_msg "ZRAM 6GB berhasil dibuat ulang."
+else
+  log_msg "ZRAM sudah optimal (6GB, $ZRAM_COMPRESSOR). Skip rebuild."
 fi
 
-# 5. STORAGE READ-AHEAD OPTIMIZATION
-# Enhances app loading speed
-log_msg "Section 5: Tuning Storage Read-Ahead..."
+# Terapkan Swappiness dinamis dan parameter Virtual Memory
+SWAPPINESS_VAL=180
+case "$MODE" in
+  performance)
+    SWAPPINESS_VAL=200
+    ;;
+  battery)
+    SWAPPINESS_VAL=160
+    ;;
+  balanced|*)
+    SWAPPINESS_VAL=180
+    ;;
+esac
+
+write_value "$SWAPPINESS_VAL" /proc/sys/vm/swappiness
+write_value 100 /proc/sys/vm/vfs_cache_pressure
+write_value 20 /proc/sys/vm/dirty_ratio
+write_value 5 /proc/sys/vm/dirty_background_ratio
+
+log_msg "VM parameters applied: swappiness=$SWAPPINESS_VAL, dirty_ratio=20"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6. STORAGE READ-AHEAD OPTIMIZATION
+# ──────────────────────────────────────────────────────────────────────────────
+log_msg "Section 6: Tuning Storage Read-Ahead..."
 for queue in /sys/block/*/queue; do
   if [ -d "$queue" ]; then
     write_value 512 "$queue/read_ahead_kb"
@@ -256,12 +384,20 @@ for queue in /sys/block/*/queue; do
 done
 log_msg "Read-ahead buffers set to 512KB for storage block queues"
 
-# 6. TCP SYSCTL NETWORK TUNING
-# Optimizes networking performance & latency
-log_msg "Section 6: Applying TCP sysctl optimizations..."
+# ──────────────────────────────────────────────────────────────────────────────
+# 7. TCP SYSCTL NETWORK TUNING
+# ──────────────────────────────────────────────────────────────────────────────
+log_msg "Section 7: Menerapkan optimasi TCP sysctl..."
 write_value "bbr" /proc/sys/net/ipv4/tcp_congestion_control && log_msg "TCP congestion control set to BBR"
 write_value "fq" /proc/sys/net/core/default_qdisc && log_msg "Default qdisc set to FQ"
 write_value 3 /proc/sys/net/ipv4/tcp_fastopen && log_msg "TCP Fast Open set to 3"
-write_value 1 /proc/sys/net/ipv4/tcp_slow_start_after_idle && log_msg "TCP slow start after idle disabled (1)"
+write_value 1 /proc/sys/net/ipv4/tcp_slow_start_after_idle && log_msg "TCP slow start after idle dinonaktifkan (1)"
+
+# Tulis status akhir untuk dibaca user/KSU
+echo "active_profile: $MODE" > "$STATUS_FILE"
+echo "wifi_status: cfg=$CFG_LOADED, vendor=$WLAN_LOADED" >> "$STATUS_FILE"
+echo "zram_status: size=6GB, comp=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | grep -o '\[.*\]' | tr -d '[]')" >> "$STATUS_FILE"
+echo "uclamp_status: top-app-min=$UCLAMP_MIN_TOP_APP" >> "$STATUS_FILE"
+echo "last_applied: $(date)" >> "$STATUS_FILE"
 
 log_msg "=== EPITAPH TUNER COMPLETED SUCCESSFULLY ==="
