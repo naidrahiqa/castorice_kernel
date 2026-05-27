@@ -90,11 +90,20 @@
 
 <br/>
 
-<!-- PRIMARY BADGES -->
-![Android](https://img.shields.io/badge/Android-15-3DDC84?style=for-the-badge&logo=android&logoColor=white)
-![Device](https://img.shields.io/badge/Redmi_12-fire-FF6900?style=for-the-badge&logo=xiaomi&logoColor=white)
-![Chipset](https://img.shields.io/badge/Helio_G88-MT6769-orange?style=for-the-badge)
-![Kernel](https://img.shields.io/badge/GKI-6.6-0ea5e9?style=for-the-badge&logo=linux&logoColor=white)
+<!-- PROJECT STATUS BADGES -->
+[![Build Status](https://img.shields.io/github/actions/workflow/status/naidrahiqa/epitaph_kernel/build_manager_gki.yml?branch=main&style=for-the-badge&logo=github-actions&logoColor=white&color=emerald)](https://github.com/naidrahiqa/epitaph_kernel/actions)
+[![Latest Release](https://img.shields.io/github/v/release/naidrahiqa/epitaph_kernel?style=for-the-badge&logo=github&logoColor=white&color=3b82f6)](https://github.com/naidrahiqa/epitaph_kernel/releases)
+[![License](https://img.shields.io/github/license/naidrahiqa/epitaph_kernel?style=for-the-badge&logo=git&logoColor=white&color=64748b)](LICENSE)
+
+<br/>
+
+<!-- SYSTEM SPECIFICATION BADGES -->
+![Device](https://img.shields.io/badge/Device-Redmi%2012%20(fire)-FF6900?style=for-the-badge&logo=xiaomi&logoColor=white)
+![OS](https://img.shields.io/badge/OS-Android%2015%20(HyperOS%202.0)-3DDC84?style=for-the-badge&logo=android&logoColor=white)
+![SoC](https://img.shields.io/badge/SoC-Helio%20G88%20(MT6769)-4F46E5?style=for-the-badge&logo=microchip&logoColor=white)
+![Kernel](https://img.shields.io/badge/Kernel-GKI%206.6-0ea5e9?style=for-the-badge&logo=linux&logoColor=white)
+![Root](https://img.shields.io/badge/Root-KernelSU--Next-7C3AED?style=for-the-badge&logo=superuser&logoColor=white)
+![SUSFS](https://img.shields.io/badge/SUSFS-Supported-10B981?style=for-the-badge&logo=shield&logoColor=white)
 
 </div>
 
