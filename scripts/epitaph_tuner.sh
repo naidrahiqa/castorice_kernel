@@ -394,37 +394,100 @@ else
   log_msg "ZRAM sudah optimal (6GB, $ZRAM_COMPRESSOR). Skip rebuild."
 fi
 
-# Terapkan Swappiness dinamis dan parameter Virtual Memory
+# Terapkan Swappiness dinamis dan parameter Virtual Memory terkalibrasi untuk eMMC 5.1
 SWAPPINESS_VAL=180
+DIRTY_RATIO=15
+DIRTY_BG_RATIO=3
+WRITEBACK_CENTI=150
+EXPIRE_CENTI=1000
+
 case "$MODE" in
   performance)
     SWAPPINESS_VAL=200
+    DIRTY_RATIO=10          # Kurangi batas akumulasi agar proses menulis tidak menghentikan layar (lag)
+    DIRTY_BG_RATIO=2
+    WRITEBACK_CENTI=100     # Lakukan sinkronisasi data kotor setiap 1 detik untuk menghindari penumpukan antrean
+    EXPIRE_CENTI=500        # Waktu usang halaman kotor diatur ke 5 detik
     ;;
   battery)
     SWAPPINESS_VAL=160
+    DIRTY_RATIO=20          # Tingkatkan batas akumulasi agar CPU tidak sering terbangun untuk I/O
+    DIRTY_BG_RATIO=5
+    WRITEBACK_CENTI=300     # Kumpulkan data kotor lebih lama (3 detik) untuk efisiensi baterai
+    EXPIRE_CENTI=2000
     ;;
   balanced|*)
     SWAPPINESS_VAL=180
+    DIRTY_RATIO=15
+    DIRTY_BG_RATIO=3
+    WRITEBACK_CENTI=150     # Flush berkala setiap 1.5 detik
+    EXPIRE_CENTI=1000       # Waktu usang halaman kotor diatur ke 10 detik
     ;;
 esac
 
 write_value "$SWAPPINESS_VAL" /proc/sys/vm/swappiness
 write_value 100 /proc/sys/vm/vfs_cache_pressure
-write_value 20 /proc/sys/vm/dirty_ratio
-write_value 5 /proc/sys/vm/dirty_background_ratio
+write_value "$DIRTY_RATIO" /proc/sys/vm/dirty_ratio
+write_value "$DIRTY_BG_RATIO" /proc/sys/vm/dirty_background_ratio
+write_value "$WRITEBACK_CENTI" /proc/sys/vm/dirty_writeback_centisecs
+write_value "$EXPIRE_CENTI" /proc/sys/vm/dirty_expire_centisecs
 
-log_msg "VM parameters applied: swappiness=$SWAPPINESS_VAL, dirty_ratio=20"
+log_msg "VM parameters applied: swappiness=$SWAPPINESS_VAL, dirty_ratio=$DIRTY_RATIO, dirty_background_ratio=$DIRTY_BG_RATIO, writeback=$WRITEBACK_CENTI centisecs"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6. STORAGE READ-AHEAD OPTIMIZATION
+# 6. OPTIMASI PENYIMPANAN & PENJADWAL I/O (eMMC 5.1)
 # ──────────────────────────────────────────────────────────────────────────────
-log_msg "Section 6: Tuning Storage Read-Ahead..."
+log_msg "Section 6: Tuning antrean blok penyimpanan & penjadwal I/O..."
 for queue in /sys/block/*/queue; do
   if [ -d "$queue" ]; then
+    # 1. Optimasi Antrean Dasar untuk eMMC 5.1
     write_value 512 "$queue/read_ahead_kb"
+    write_value 0 "$queue/add_random"           # Matikan kontribusi entropi acak dari aktivitas disk
+    write_value 0 "$queue/rotational"           # Pastikan disk dikenali sebagai flash non-rotasional
+    write_value 0 "$queue/iostats"              # Matikan pelacakan statistik I/O untuk mengurangi beban CPU
+    write_value 2 "$queue/rq_affinity"          # Kembalikan I/O yang selesai ke CPU yang meminta (cache hit)
+    write_value 2 "$queue/nomerges"             # Hindari overhead penggabungan blok I/O yang lambat
+
+    # 2. Pemilihan Penjadwal I/O Dinamis untuk Mengurangi Stutter
+    if [ -f "$queue/scheduler" ]; then
+      available_scheds=$(cat "$queue/scheduler")
+      target_sched="mq-deadline"
+      
+      case "$MODE" in
+        performance)
+          # Gunakan scheduler kyber dengan latensi sangat rendah jika tersedia
+          if echo "$available_scheds" | grep -q "kyber"; then
+            target_sched="kyber"
+          else
+            target_sched="mq-deadline"
+          fi
+          ;;
+        balanced|battery|*)
+          target_sched="mq-deadline"
+          ;;
+      esac
+      
+      write_value "$target_sched" "$queue/scheduler"
+      
+      # 3. Kalibrasi Parameter Scheduler secara Dinamis
+      if [ "$target_sched" = "mq-deadline" ]; then
+        if [ "$MODE" = "performance" ]; then
+          write_value 100 "$queue/iosched/read_expire"   # default 500ms -> 100ms untuk respon instan
+          write_value 4 "$queue/iosched/writes_starved"  # prioritaskan pembacaan di atas penulisan
+        else
+          write_value 250 "$queue/iosched/read_expire"
+          write_value 2 "$queue/iosched/writes_starved"
+        fi
+      elif [ "$target_sched" = "kyber" ]; then
+        if [ "$MODE" = "performance" ]; then
+          write_value 2000000 "$queue/iosched/read_lat_nsec"   # Target latensi baca 2ms
+          write_value 10000000 "$queue/iosched/write_lat_nsec" # Target latensi tulis 10ms
+        fi
+      fi
+    fi
   fi
 done
-log_msg "Read-ahead buffers set to 512KB for storage block queues"
+log_msg "Storage block queue depth & active I/O scheduler calibrated successfully"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 7. TCP SYSCTL NETWORK TUNING
