@@ -271,7 +271,7 @@ jobs:
           fi
 
           # LANGKAH 4: Konfigurasi SUSFS untuk KernelSU-Next source
-          # CATATAN: Kita menggunakan pershoot/KernelSU-Next branch next-susfs yang sudah
+          # CATATAN: Kita menggunakan pershoot/KernelSU-Next branch dev-susfs yang sudah
           # di-pre-patched secara mandiri oleh pershoot untuk SUSFS v2.1.0 (sangat andal dan
           # terhindar dari signature mismatch). Patch manual 10_enable_susfs dilewati.
           KSU_KERNEL="drivers/kernelsu"

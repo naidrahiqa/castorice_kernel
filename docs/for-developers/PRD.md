@@ -62,7 +62,7 @@ Trigger: workflow_dispatch (manual)
                │     │     ├── download_toolchain (if custom compiler is active)
                │     │     ├── sync_kernel (repo sync common-android15-6.6)
                │     │     ├── set_kmi
-               │     │     ├── setup_ksu (pershoot/KernelSU-Next branch next-susfs)
+               │     │     ├── setup_ksu (pershoot/KernelSU-Next branch dev-susfs)
                │     │     ├── apply_patches
                │     │     └── patch_build_system
                │     ├── Setup SUSFS (if with_susfs=true)
@@ -95,7 +95,7 @@ Trigger: workflow_dispatch (manual)
 
 ### 🔐 Root & Security (100% Stable)
 * **KernelSU-Next Built-in**: Direct kernel-level root access natively loaded without system partition modifications.
-* **SUSFS for KSU**: Successfully integrated pre-patched driver layers (`next-susfs`) to fully pass banking safety evaluations.
+* **SUSFS for KSU**: Successfully integrated pre-patched driver layers (`dev-susfs`) to fully pass banking safety evaluations.
 * **Vermagic Bypass**: Custom dynamically patched module loaders (`same_magic()` returning `1`) to safely bypass signature mismatches, allowing stock Xiaomi WiFi modules to load natively.
 
 ### 🚀 Performance & Memory (100% Stable)

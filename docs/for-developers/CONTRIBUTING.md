@@ -21,7 +21,7 @@ Read these documents first:
 ## What NOT to Submit
 
 - Changes that enable `CONFIG_DEBUG_INFO_NONE=y`
-- Changes that switch from `pershoot/KernelSU-Next` (next-susfs branch)
+- Changes that switch from `pershoot/KernelSU-Next` (dev-susfs branch)
 - Removing `patch_vermagic.py`
 - Forcing `CONFIG_CFG80211=y` or `CONFIG_MAC80211=y` (must stay `=m`)
 - Locking the kernel to a specific old commit

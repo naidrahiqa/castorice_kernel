@@ -7,7 +7,7 @@ Format: [vX.Y] — YYYY-MM-DD
 
 ## [v148] — 2026-05-28
 ### Fixed
-- SUSFS build: migrated KSU source to pershoot/KernelSU-Next branch next-susfs
+- SUSFS build: migrated KSU source to pershoot/KernelSU-Next branch dev-susfs
 - SUSFS build: added git commit after staging to make changes visible to Bazel
 - SUSFS_INTEGRATED flag: now verified from actual patched source, not self-written Kconfig
 
