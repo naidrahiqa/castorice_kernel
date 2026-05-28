@@ -10,7 +10,7 @@ trigger: always_on
 - Device: Xiaomi Redmi 12, codename `fire`, chipset Helio G88 (MT6769)
 - OS: Android 15 HyperOS 2.0
 - Build system: Bazel/Kleaf (primary), make-based custom toolchains (experimental)
-- Root method: KernelSU-Next only (pershoot/KernelSU-Next branch next-susfs for SUSFS builds)
+- Root method: KernelSU-Next only (pershoot/KernelSU-Next branch dev-susfs for SUSFS builds, KernelSU-Next/KernelSU-Next branch dev for No-SUSFS builds)
 - CI/CD: GitHub Actions, multi-toolchain matrix
 
 ## Key Files — Know These Before Touching Anything
@@ -42,7 +42,7 @@ trigger: always_on
 ## SUSFS — The Long-Standing Bug
 - SUSFS builds have failed from v1 through v129
 - Root causes identified:
-  1. Wrong KSU source: must use `pershoot/KernelSU-Next` branch `next-susfs` (pre-patched)
+  1. Wrong KSU source: must use `pershoot/KernelSU-Next` branch `dev-susfs` (pre-patched) for SUSFS builds, and `KernelSU-Next/KernelSU-Next` branch `dev` for No-SUSFS builds
   2. Bazel reads from git HEAD not staging — always commit after `git add`
   3. `SUSFS_INTEGRATED` was always true regardless of patch success — now fixed
 - The `50_add_susfs_in_kernel.patch` (kernel side) still needs to be applied manually
