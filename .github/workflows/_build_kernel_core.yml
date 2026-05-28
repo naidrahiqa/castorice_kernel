@@ -354,8 +354,8 @@ jobs:
           if [ ! -f "include/linux/susfs.h" ]; then
             echo "   ❌ include/linux/susfs.h does not exist"
           fi
-          if ! grep -q "ksu_susfs_init\|susfs_handle_ioctl" drivers/kernelsu/*.c 2>/dev/null; then
-            echo "   ❌ KSU SUSFS symbols not found in drivers/kernelsu/*.c"
+          if ! grep -rqi "susfs" drivers/kernelsu/ 2>/dev/null; then
+            echo "   ❌ KSU SUSFS symbols not found in drivers/kernelsu/ (recursive search failed)"
           fi
           if [ "$REJ_COUNT" -ne 0 ]; then
             echo "   ❌ There are $REJ_COUNT rejected patch files (*.rej)"
@@ -363,7 +363,7 @@ jobs:
 
           if [ -f "fs/susfs.c" ] && [ $(wc -c < "fs/susfs.c") -gt 1024 ] \
              && [ -f "include/linux/susfs.h" ] \
-             && grep -q "ksu_susfs_init\|susfs_handle_ioctl" drivers/kernelsu/*.c 2>/dev/null \
+             && grep -rqi "susfs" drivers/kernelsu/ 2>/dev/null \
              && [ "$REJ_COUNT" -eq 0 ]; then
             SUSFS_INTEGRATED=true
           fi
