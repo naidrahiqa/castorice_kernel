@@ -482,7 +482,19 @@ for tz in /sys/class/thermal/thermal_zone*; do
     fi
   fi
 done
-[ -z "$cpu_zone" ] && cpu_zone="/sys/class/thermal/thermal_zone0"
+
+if [ -z "$cpu_zone" ]; then
+  echo -e "${YELLOW}⚠️ PERINGATAN: Tidak ada thermal zone CPU/SoC spesifik yang terdeteksi!${NC}"
+  echo -e "  Mencoba fallback menggunakan /sys/class/thermal/thermal_zone0..."
+  cpu_zone="/sys/class/thermal/thermal_zone0"
+fi
+
+if [ ! -d "$cpu_zone" ] || [ ! -f "$cpu_zone/temp" ]; then
+  echo -e "${RED}❌ ERROR: Thermal zone '$cpu_zone' tidak valid atau berkas 'temp' hilang!${NC}"
+  exit 1
+fi
+
+echo -e "  Menggunakan thermal zone: ${CYAN}$cpu_zone${NC} (${GREEN}$(cat $cpu_zone/type 2>/dev/null || echo "unknown")${NC})"
 
 get_temp() {
   local temp_raw=$(cat "$cpu_zone/temp" 2>/dev/null || echo "0")
@@ -722,7 +734,7 @@ battery() {
   done
   
   # Virtual Memory (Swappiness Rendah, Flush Agresif)
-  write_value 160 /proc/sys/vm/swappiness
+  write_value 130 /proc/sys/vm/swappiness
   write_value 20 /proc/sys/vm/dirty_ratio
   write_value 5 /proc/sys/vm/dirty_background_ratio
   write_value 300 /proc/sys/vm/dirty_writeback_centisecs
@@ -774,7 +786,7 @@ balanced() {
   done
   
   # Virtual Memory Balanced
-  write_value 180 /proc/sys/vm/swappiness
+  write_value 150 /proc/sys/vm/swappiness
   write_value 15 /proc/sys/vm/dirty_ratio
   write_value 3 /proc/sys/vm/dirty_background_ratio
   write_value 150 /proc/sys/vm/dirty_writeback_centisecs
@@ -833,7 +845,7 @@ performance() {
   done
   
   # Virtual Memory (Swappiness Tinggi untuk ZRAM, Sinkronisasi I/O Sangat Cepat)
-  write_value 200 /proc/sys/vm/swappiness
+  write_value 160 /proc/sys/vm/swappiness
   write_value 10 /proc/sys/vm/dirty_ratio
   write_value 2 /proc/sys/vm/dirty_background_ratio
   write_value 100 /proc/sys/vm/dirty_writeback_centisecs
@@ -921,10 +933,12 @@ apply_charging_boost() {
 
 revert_charging_boost() {
   echo "false" > "/data/adb/epitaph/charging_boost_active" 2>/dev/null
-  log_charging "🔋 Menormalkan profil pengisian daya (kembali ke profil user: $MODE)"
+  local current_mode=$(cat "/data/adb/epitaph/mode" 2>/dev/null | tr -d ' \r\n')
+  [ -z "$current_mode" ] && current_mode="balanced"
+  log_charging "🔋 Menormalkan profil pengisian daya (kembali ke profil user: $current_mode)"
   
   # Re-apply mode aktif saat ini untuk menormalkan governor
-  apply_profile "$MODE"
+  apply_profile "$current_mode"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1020,6 +1034,17 @@ apply_profile() {
   echo "$target_mode" > "$MODE_FILE" 2>/dev/null
 }
 
+# Intercept background daemon calls immediately
+if [ "$1" = "--thermal-daemon" ]; then
+  thermal_daemon
+  exit 0
+fi
+
+if [ "$1" = "--charging-daemon" ]; then
+  charging_daemon
+  exit 0
+fi
+
 log_msg "=== EPITAPH TUNER TUNING IN PROGRESS ==="
 
 # 1. WIFI MODULE LOADER & RECOVERY
@@ -1029,7 +1054,7 @@ if lsmod | grep -q cfg80211; then
   log_msg "cfg80211 sudah termuat"
   CFG_LOADED=true
 else
-  for search_dir in /vendor/lib/modules /vendor_dlkm/lib/modules /data/adb/wifi_fix; do
+  for search_dir in /data/adb/wifi_fix /vendor/lib/modules /vendor_dlkm/lib/modules; do
     if [ -f "$search_dir/cfg80211.ko" ]; then
       insmod "$search_dir/rfkill.ko" 2>/dev/null
       insmod "$search_dir/libarc4.ko" 2>/dev/null

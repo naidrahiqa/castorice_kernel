@@ -134,7 +134,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/bazel
-          key: gki-bazel-${{ inputs.ksu_method }}-${{ inputs.clang_toolchain }}-${{ hashFiles('patches/**', '.github/workflows/_build_kernel_core.yml') }}
+          key: gki-bazel-${{ inputs.ksu_method }}-${{ inputs.clang_toolchain }}-${{ hashFiles('patches/**', 'workflow_scripts/**', '.github/workflows/_build_kernel_core.yml') }}
           restore-keys: |
             gki-bazel-${{ inputs.ksu_method }}-${{ inputs.clang_toolchain }}-
             gki-bazel-${{ inputs.ksu_method }}-

@@ -26,7 +26,19 @@ for tz in /sys/class/thermal/thermal_zone*; do
     fi
   fi
 done
-[ -z "$cpu_zone" ] && cpu_zone="/sys/class/thermal/thermal_zone0"
+
+if [ -z "$cpu_zone" ]; then
+  echo -e "${YELLOW}⚠️ PERINGATAN: Tidak ada thermal zone CPU/SoC spesifik yang terdeteksi!${NC}"
+  echo -e "  Mencoba fallback menggunakan /sys/class/thermal/thermal_zone0..."
+  cpu_zone="/sys/class/thermal/thermal_zone0"
+fi
+
+if [ ! -d "$cpu_zone" ] || [ ! -f "$cpu_zone/temp" ]; then
+  echo -e "${RED}❌ ERROR: Thermal zone '$cpu_zone' tidak valid atau berkas 'temp' hilang!${NC}"
+  exit 1
+fi
+
+echo -e "  Menggunakan thermal zone: ${CYAN}$cpu_zone${NC} (${GREEN}$(cat $cpu_zone/type 2>/dev/null || echo "unknown")${NC})"
 
 get_temp() {
   local temp_raw=$(cat "$cpu_zone/temp" 2>/dev/null || echo "0")
