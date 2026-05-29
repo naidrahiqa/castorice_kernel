@@ -345,7 +345,7 @@ static void EP(_work)(struct kthread_work *work)
 	__cpufreq_driver_target(ep->policy, freq, CPUFREQ_RELATION_L);
 }
 
-static void EP(_irq_work)(struct irq_work *irq)
+static void __maybe_unused EP(_irq_work)(struct irq_work *irq)
 {
 	struct EP(_policy) *ep =
 		container_of(irq, struct EP(_policy), irq_work);
@@ -647,6 +647,7 @@ static int EP(_init)(struct cpufreq_policy *policy)
 	}
 
 	mutex_init(&ep->work_lock);
+	init_irq_work(&ep->irq_work, EP(_irq_work));
 
 	ret = EP(_kthread_create)(ep);
 	if (ret)
