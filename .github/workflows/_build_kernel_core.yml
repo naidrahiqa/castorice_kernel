@@ -57,6 +57,35 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Cleanup Disk Space
+        run: |
+          START_TIME=$(date +%s)
+          echo "=== 🧹 Membersihkan Ruang Disk Runner ==="
+          df -h
+          
+          # Hapus perkakas bawaan runner yang tidak diperlukan
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/share/swift /usr/share/miniconda /usr/local/share/chromium \
+            /usr/local/share/powershell /usr/local/bin/aliyun /usr/local/bin/azcopy \
+            /usr/local/bin/cmake-gui /var/lib/docker
+          
+          # Bersihkan cache apt dan paket yang tidak terpakai
+          sudo apt-get remove -y '^dotnet-.*' '^llvm-.*' 'php.*' \
+            azure-cli google-cloud-cli google-chrome-stable firefox \
+            powershell mono-devel || true
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          
+          # Bersihkan Docker secara menyeluruh
+          sudo docker system prune -a -f --volumes || true
+          
+          echo "=== Ruang Disk Pasca-Pembersihan ==="
+          df -h
+          
+          mkdir -p /tmp/build_metrics
+          echo "$(date +%s)" > /tmp/build_metrics/start_total
+          echo "Pembersihan Ruang Disk,$START_TIME,$(date +%s)" >> /tmp/build_metrics/steps.csv
+
       - name: Debug Inputs
         run: |
           echo "=== WORKFLOW INPUTS ==="
@@ -113,6 +142,7 @@ jobs:
 
       - name: Prepare Kernel Build (Common)
         run: |
+          START_TIME=$(date +%s)
           chmod +x "$GITHUB_WORKSPACE/scripts/prepare_kernel_build.sh"
           mkdir -p kernel
           # Tangkap log persiapan build ke file sementara agar bisa didiagnosis jika terjadi kegagalan
@@ -131,6 +161,7 @@ jobs:
               exit 1
           fi
           cat /tmp/prep_build.log
+          echo "Persiapan Kernel Build,$START_TIME,$(date +%s)" >> /tmp/build_metrics/steps.csv
 
       # FIX 1: Re-enable SUSFS step — was hardcoded `if: false` for testing.
       # Sekarang mengikuti input `with_susfs` dari matrix dispatcher.
@@ -140,6 +171,7 @@ jobs:
         if: inputs.with_susfs == 'true'
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           cd kernel
 
           echo "📥 Cloning SUSFS4KSU..."
@@ -412,6 +444,7 @@ jobs:
             echo "✅ SUSFS changes committed to git HEAD — visible to Bazel sandbox"
 
             echo "✅ SUSFS integration complete"
+            echo "Konfigurasi SUSFS,$START_TIME,$(date +%s)" >> /tmp/build_metrics/steps.csv
           else
             {
               echo "❌ ERROR: SUSFS integration failed!"
@@ -455,6 +488,7 @@ jobs:
       - name: Configure Kernel
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           cd kernel/common
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
           GOVERNOR="schedutil"
@@ -640,11 +674,13 @@ jobs:
               commit -m "ci: disable kheaders as last resort" \
               --allow-empty 2>/dev/null || true
           fi
+          echo "Konfigurasi Kernel,$START_TIME,$(date +%s)" >> /tmp/build_metrics/steps.csv
 
       - name: Build Kernel (Bazel)
         if: inputs.clang_toolchain == 'bazel-default' || inputs.clang_toolchain == ''
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           cd kernel
           mkdir -p $GITHUB_WORKSPACE/dist
 
@@ -689,6 +725,7 @@ jobs:
           if [ "${{ inputs.clang_toolchain }}" = "bazel-default" ] || [ -z "${{ inputs.clang_toolchain }}" ]; then
             echo "TOOLCHAIN_NAME=Bazel" >> $GITHUB_ENV
           fi
+          echo "Kompilasi Kernel (Bazel),$START_TIME,$(date +%s)" >> /tmp/build_metrics/steps.csv
         env:
           SOURCE_DATE_EPOCH: "0"
 
@@ -696,6 +733,7 @@ jobs:
         if: inputs.clang_toolchain != 'bazel-default' && inputs.clang_toolchain != ''
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           cd kernel/common
           if [ -z "${CUSTOM_CLANG_PATH:-}" ]; then
             echo "❌ ERROR: CUSTOM_CLANG_PATH not set!"
@@ -717,12 +755,14 @@ jobs:
           # Kompilasi Citra Kernel dan Modul Driver
           # PENTING: Utamakan hasil kompilasi Image.gz agar perangkat MediaTek dapat memuat kernel dengan sukses tanpa kendala.
           make -j$(nproc) $MAKE_ARGS Image.gz Image.lz4 modules 2>&1 | tee ../build.log
+          echo "Kompilasi Kernel (Kustom),$START_TIME,$(date +%s)" >> /tmp/build_metrics/steps.csv
         env:
           SOURCE_DATE_EPOCH: "0"
 
       - name: Extract Build Output
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           mkdir -p $GITHUB_WORKSPACE/dist
           if [ "${{ inputs.clang_toolchain }}" = "bazel-default" ] || [ -z "${{ inputs.clang_toolchain }}" ]; then
             cd kernel
@@ -754,9 +794,11 @@ jobs:
           fi
           echo "📦 dist/ contents:"
           ls -lah $GITHUB_WORKSPACE/dist/ || true
+          echo "Ekstraksi Output Build,$START_TIME,$(date +%s)" >> /tmp/build_metrics/steps.csv
 
       - name: Verify Build
         run: |
+          START_TIME=$(date +%s)
           HAS_IMAGE=false
           for f in dist/Image dist/Image.gz dist/Image.lz4; do
             if [ -f "$f" ]; then
@@ -771,6 +813,7 @@ jobs:
             exit 1
           fi
           echo "✅ Verify Build passed."
+          echo "Verifikasi Build Utama,$START_TIME,$(date +%s)" >> /tmp/build_metrics/steps.csv
 
       - name: Upload Debug Artifacts (on failure)
         if: failure()
@@ -787,7 +830,13 @@ jobs:
 
       - name: Generate Changelog
         run: |
-          # Generate changelog dari git log antara tag sebelumnya dan tag saat ini
+          START_TIME=$(date +%s)
+          python3 workflow_scripts/generate_changelog.py
+          echo "GIT_CHANGELOG<<EOF" >> $GITHUB_ENV
+          cat changelog.md >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "Generate Changelog,$START_TIME,$(date +%s)" >> /tmp/build_metrics/steps.csv
+          exit 0
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           if [ -n "$PREV_TAG" ]; then
             GIT_CHANGELOG=$(git log --oneline --no-merges \
@@ -805,6 +854,7 @@ jobs:
       - name: Package AnyKernel3
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           CUSTOM_NAME="${{ inputs.custom_name }}"
           BUILD_VER="${{ github.run_number }}"
           AUTHOR="${{ inputs.author_name }}"
@@ -922,6 +972,44 @@ jobs:
 
           zip -r9 "$GITHUB_WORKSPACE/dist/${BASE_NAME}-AnyKernel3.zip" . -x ".git*" "*.md" "LICENSE"
           echo "✅ Package created: ${BASE_NAME}-AnyKernel3.zip"
+          echo "Pemaketan AnyKernel3,$START_TIME,$(date +%s)" >> /tmp/build_metrics/steps.csv
+
+      - name: Verify Build & Smoke Test
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          echo "=== 🛡️ Memulai Uji Asap (Smoke Test) Pasca-Build ==="
+          
+          # 1. Verifikasi keberadaan dan ukuran Image.gz (minimal 5MB)
+          IMAGE_PATH="dist/Image.gz"
+          if [ ! -f "$IMAGE_PATH" ]; then
+            echo "❌ ERROR: Image.gz tidak ditemukan di folder dist/!"
+            exit 1
+          fi
+          
+          IMAGE_SIZE=$(stat -c%s "$IMAGE_PATH")
+          echo "ℹ️ Image.gz ditemukan, ukuran: $((IMAGE_SIZE / 1024 / 1024)) MB ($IMAGE_SIZE bytes)"
+          if [ "$IMAGE_SIZE" -lt 5242880 ]; then
+            echo "❌ ERROR: Image.gz terlalu kecil ($((IMAGE_SIZE / 1024 / 1024)) MB), di bawah batas minimum 5MB!"
+            exit 1
+          fi
+          
+          # 2. Verifikasi keberadaan dan ukuran AnyKernel3 ZIP (minimal 5MB)
+          ZIP_PATH=$(ls dist/*-AnyKernel3.zip 2>/dev/null | head -n1 || echo "")
+          if [ -z "$ZIP_PATH" ] || [ ! -f "$ZIP_PATH" ]; then
+            echo "❌ ERROR: Berkas AnyKernel3 ZIP tidak ditemukan di folder dist/!"
+            exit 1
+          fi
+          
+          ZIP_SIZE=$(stat -c%s "$ZIP_PATH")
+          echo "ℹ️ AnyKernel3 ZIP ditemukan: $(basename $ZIP_PATH), ukuran: $((ZIP_SIZE / 1024 / 1024)) MB ($ZIP_SIZE bytes)"
+          if [ "$ZIP_SIZE" -lt 5242880 ]; then
+            echo "❌ ERROR: AnyKernel3 ZIP terlalu kecil ($((ZIP_SIZE / 1024 / 1024)) MB), di bawah batas minimum 5MB!"
+            exit 1
+          fi
+          
+          echo "✅ UJI ASAP BERHASIL: Semua berkas utama valid dan melebihi ukuran minimum 5MB."
+          echo "Uji Asap Pasca-Build,$START_TIME,$(date +%s)" >> /tmp/build_metrics/steps.csv
 
       - name: Initialize Release Metadata
         run: |
@@ -934,41 +1022,37 @@ jobs:
           fi
           echo "RESCUE_VER=${RESCUE_TAG}" >> $GITHUB_ENV
 
-      - name: Upload Artifacts
+      - name: Upload Artifacts (Bazel Release)
+        if: inputs.clang_toolchain == 'bazel-default' || inputs.clang_toolchain == ''
         uses: actions/upload-artifact@v4
         with:
           name: "${{ env.ZIP_NAME }}"
           path: dist/*.zip
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
 
+      - name: Upload Artifacts (Experimental Toolchains)
+        if: inputs.clang_toolchain != 'bazel-default' && inputs.clang_toolchain != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: "epitaph-${{ inputs.clang_toolchain }}-experimental-${{ github.sha }}"
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Create Release
+        if: (inputs.clang_toolchain == 'bazel-default' || inputs.clang_toolchain == '') && success()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "${{ inputs.release_tag }}"
           name: "Epitaph Kernel ${{ inputs.release_tag }}"
           body: |
-            ## 👑 Epitaph Kernel ${{ inputs.release_tag }}
-
-            🚀 **Stable GKI 6.6 Kernel for Redmi 12 (fire)**
-            Running **Android 15 HyperOS 2.0** compiled with **${{ inputs.clang_toolchain }}**.
-
-            ### 📊 Build Info
-            - **Kernel Version:** `GKI 6.6`
-            - **Root Method:** `${{ inputs.ksu_method }} v${{ env.KSU_VERSION }}`
-            - **SUSFS Status:** `${{ inputs.with_susfs == 'true' && 'Integrated' || 'None' }}`
-            - **Kernel KMI:** `android15-${{ env.KMI_GENERATION }}`
-            - **Build Timestamp:** `${{ env.BUILD_TIME }}` (run #${{ github.run_number }})
-
-            ---
-
-            ### 📝 Changes (Changelog)
             ${{ env.GIT_CHANGELOG }}
 
             ---
 
-            ### 🔧 Emergency & Rescue
-            * 🚨 **Bootloop?** Download the portable [Epitaph Rescue Tool ${{ env.RESCUE_VER }}](https://github.com/naidrahiqa/epitaph_rescue/releases/tag/${{ env.RESCUE_VER }}) to automatically restore stock and extract RAMoops logs with a single click.
+            ### ðŸ”§ Emergency & Rescue
+            * ðŸš¨ **Bootloop?** Download the portable [Epitaph Rescue Tool ${{ env.RESCUE_VER }}](https://github.com/naidrahiqa/epitaph_rescue/releases/tag/${{ env.RESCUE_VER }}) to automatically restore stock and extract RAMoops logs with a single click.
             * Flash the official stock `boot.img` via Fastboot to recover:
               ```bash
               fastboot flash boot boot_stock.img
@@ -976,7 +1060,7 @@ jobs:
 
             ---
 
-            > ⚠️ **Prerequisite:** Make sure to disable verified boot verification via Fastboot:
+            > âš ï¸ **Prerequisite:** Make sure to disable verified boot verification via Fastboot:
             > ```
             > fastboot --disable-verity --disable-verification flash vbmeta vbmeta.img
             > fastboot --disable-verity --disable-verification flash vbmeta_system vbmeta_system.img
@@ -989,7 +1073,7 @@ jobs:
 
       # ─── TELEGRAM: Upload zip ke channel update (per-build) ──────────
       - name: Send to Telegram (Success)
-        if: success()
+        if: (inputs.clang_toolchain == 'bazel-default' || inputs.clang_toolchain == '') && success()
         continue-on-error: true
         env:
           TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -1072,3 +1156,66 @@ jobs:
               --form-string "text=$(printf '<b>📋 Error snippet:</b>\n<pre>%s</pre>' "$SNIPPET")" \
               --form-string "parse_mode=HTML"
           fi
+
+      - name: Post Build Summary Comment
+        if: always()
+        run: |
+          echo "=== ðŸ“¢ Menulis Ringkasan Build ==="
+          STATUS="âŒ GAGAL (FAILED)"
+          if [ "${{ job.status }}" = "success" ]; then
+            STATUS="âœ… BERHASIL (SUCCESS)"
+          fi
+          
+          {
+            echo "## ðŸ› ï¸ Epitaph Kernel Build Summary"
+            echo "- **Status:** $STATUS"
+            echo "- **Toolchain:** \`${{ inputs.clang_toolchain || 'bazel-default' }}\`"
+            echo "- **Metode Root:** \`${{ inputs.ksu_method }}\` v${{ env.KSU_VERSION || 'unknown' }}"
+            echo "- **Integrasi SUSFS:** \`${{ inputs.with_susfs == 'true' && 'Ya (Integrated)' || 'Tidak (None)' }}\`"
+            echo "- **Pemicu Build:** \`${{ github.actor }}\` via \`${{ github.event_name }}\`"
+            echo "- **Tautan Alur Kerja:** [Klik di Sini](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo ""
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Report Build Performance Metrics
+        if: always()
+        run: |
+          echo "=== ðŸ“Š Laporan Performa Waktu Build ==="
+          METRICS_FILE="/tmp/build_metrics/steps.csv"
+          if [ ! -f "$METRICS_FILE" ]; then
+            echo "âš ï¸ Berkas metrik performa tidak ditemukan!"
+            exit 0
+          fi
+          
+          {
+            echo ""
+            echo "### ðŸ“Š Build Performance Metrics"
+            echo "| Tahapan Build (Step Name) | Waktu Mulai | Waktu Selesai | Durasi (Detik/Menit) |"
+            echo "| :--- | :--- | :--- | :--- |"
+          } >> $GITHUB_STEP_SUMMARY
+          
+          TOTAL_DURATION=0
+          while IFS=',' read -r step start end || [ -n "$step" ]; do
+            if [ -n "$step" ] && [ -n "$start" ] && [ -n "$end" ]; then
+              duration=$((end - start))
+              TOTAL_DURATION=$((TOTAL_DURATION + duration))
+              min=$((duration / 60))
+              sec=$((duration % 60))
+              formatted_dur=""
+              if [ "$min" -gt 0 ]; then
+                formatted_dur="${min}m ${sec}s"
+              else
+                formatted_dur="${sec}s"
+              fi
+              
+              # Dapatkan waktu berformat manusia
+              start_human=$(date -d "@$start" '+%H:%M:%S' 2>/dev/null || echo "$start")
+              end_human=$(date -d "@$end" '+%H:%M:%S' 2>/dev/null || echo "$end")
+              
+              echo "| $step | $start_human | $end_human | $formatted_dur |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done < "$METRICS_FILE"
+          
+          tot_min=$((TOTAL_DURATION / 60))
+          tot_sec=$((TOTAL_DURATION % 60))
+          echo "| **Total Waktu Build** | - | - | **${tot_min}m ${tot_sec}s** |" >> $GITHUB_STEP_SUMMARY

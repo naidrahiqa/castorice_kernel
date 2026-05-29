@@ -27,14 +27,42 @@ GITHUB_ENV="$5"
 CLANG_TOOLCHAIN="${6:-bazel-default}"
 KSU_METHOD="${7:-kernelsu-next}"
 WITH_SUSFS="${8:-false}"
+# Fungsi pembantu untuk melakukan percobaan ulang (retry) dengan waktu tunggu eksponensial (backoff)
+retry_cmd() {
+  local max_attempts=3
+  local delay=5
+  local attempt=1
+  until "$@"; do
+    if [ $attempt -eq $max_attempts ]; then
+      echo "❌ Perintah gagal setelah $max_attempts percobaan: $*"
+      return 1
+    fi
+    echo "⚠️ Perintah gagal: $*. Mencoba kembali dalam ${delay}s (Percobaan $((attempt+1))/$max_attempts)..."
+    sleep $delay
+    delay=$((delay * 2)) # Backoff eksponensial
+    attempt=$((attempt + 1))
+  done
+  return 0
+}
 
-echo "=== Epitaph Build Prep: type=$WORKFLOW_TYPE tc=$CLANG_TOOLCHAIN ksu=$KSU_METHOD susfs=$WITH_SUSFS ==="
+# Fungsi pembantu untuk mengambil URL rilis terbaru dari repositori GitHub secara aman
+fetch_release_asset() {
+  local repo="$1"
+  local pattern="$2"
+  curl -sL "https://api.github.com/repos/${repo}/releases/latest" \
+    | jq -e -r --arg pat "$pattern" '.assets[] | select(.name | contains($pat)) | .browser_download_url' \
+    | head -n1
+}
 
 # ──────────────────────────────────────────────
 # 1. MAXIMIZE DISK SPACE
 # ──────────────────────────────────────────────
 maximize_disk() {
   df -h
+  # Bersihkan Docker secara menyeluruh sebelum memulai
+  sudo docker image prune -a -f || true
+  sudo docker system prune -a -f --volumes || true
+  
   sudo rm -rf \
     /usr/share/dotnet /usr/local/lib/android /opt/ghc \
     /usr/share/swift /usr/share/miniconda \
@@ -132,45 +160,58 @@ download_toolchain() {
 
   case "$CLANG_TOOLCHAIN" in
     zyc-latest)
-      echo "📥 Downloading ZyClang..."
-      ZYASSET_URL=$(curl -sL \
-        "https://api.github.com/repos/ZyCromerZ/Clang/releases/latest" \
-        | jq -r '.assets[] | select(.name | endswith(".tar.gz")) | .browser_download_url' \
-        | head -n1)
+      echo "📥 Mengunduh ZyClang..."
+      ZYASSET_URL=$(retry_cmd fetch_release_asset "ZyCromerZ/Clang" ".tar.gz")
       if [ -z "$ZYASSET_URL" ]; then
         {
-          echo "❌ ERROR: Failed to get ZyClang URL!"
-          echo "📋 Details: GitHub API request returned empty asset URL."
-          echo "🔧 Suggested fix: Check network connectivity or API rate limits."
+          echo "❌ ERROR: Gagal mendapatkan URL ZyClang!"
+          echo "📋 Detail: Permintaan API GitHub mengembalikan URL aset kosong."
+          echo "🔧 Saran perbaikan: Periksa konektivitas jaringan atau batas tingkat API."
         } > "$GITHUB_WORKSPACE/kernel/build.log"
         exit 1
       fi
-      # Tambahkan opsi retry-wait=5 dan max-tries=10 untuk menangani error transient HTTP 502/503 di GitHub Releases
-      aria2c -x16 -s16 -k1M --retry-wait=5 --max-tries=10 -o clang.tar.gz "$ZYASSET_URL"
+      retry_cmd aria2c -x16 -s16 -k1M --retry-wait=5 --max-tries=10 -o clang.tar.gz "$ZYASSET_URL"
       smart_extract clang.tar.gz clang-zyc
       CLANG_PATH="$GITHUB_WORKSPACE/prebuilts/clang/host/linux-x86/clang-zyc"
       echo "CUSTOM_CLANG_PATH=$CLANG_PATH" >> "$GITHUB_ENV"
       echo "TOOLCHAIN_NAME=ZyClang" >> "$GITHUB_ENV"
       ;;
     aosp-latest)
-      git clone --depth=1 https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r522817.git clang-aosp
+      echo "📥 Melakukan kloning AOSP Clang..."
+      retry_cmd git clone --depth=1 https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r522817.git clang-aosp
       CLANG_PATH="$GITHUB_WORKSPACE/prebuilts/clang/host/linux-x86/clang-aosp"
       echo "CUSTOM_CLANG_PATH=$CLANG_PATH" >> "$GITHUB_ENV"
       echo "TOOLCHAIN_NAME=AOSPClang" >> "$GITHUB_ENV"
       ;;
     weebx-latest)
-      WEEBX_URL=$(curl -s https://api.github.com/repos/XSans0/WeebX-Clang/releases/latest | jq -r '.assets[] | select(.name | contains("WeebX-Clang")) | .browser_download_url' | head -n1)
-      # Tambahkan opsi retry-wait=5 dan max-tries=10 untuk menangani error transient HTTP 502/503 di GitHub Releases
-      aria2c -x16 -s16 -k1M --retry-wait=5 --max-tries=10 -o clang.tar.gz "$WEEBX_URL"
+      echo "📥 Mengunduh WeebX-Clang..."
+      WEEBX_URL=$(retry_cmd fetch_release_asset "XSans0/WeebX-Clang" "WeebX-Clang")
+      if [ -z "$WEEBX_URL" ]; then
+        {
+          echo "❌ ERROR: Gagal mendapatkan URL WeebX-Clang!"
+          echo "📋 Detail: Permintaan API GitHub mengembalikan URL aset kosong."
+          echo "🔧 Saran perbaikan: Periksa konektivitas jaringan atau batas tingkat API."
+        } > "$GITHUB_WORKSPACE/kernel/build.log"
+        exit 1
+      fi
+      retry_cmd aria2c -x16 -s16 -k1M --retry-wait=5 --max-tries=10 -o clang.tar.gz "$WEEBX_URL"
       smart_extract clang.tar.gz clang-weebx
       CLANG_PATH="$GITHUB_WORKSPACE/prebuilts/clang/host/linux-x86/clang-weebx"
       echo "CUSTOM_CLANG_PATH=$CLANG_PATH" >> "$GITHUB_ENV"
       echo "TOOLCHAIN_NAME=WeebXClang" >> "$GITHUB_ENV"
       ;;
     neutron-latest)
-      NEUTRON_ASSET=$(curl -sL https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/latest | jq -r '.assets[] | select(.name | contains("neutron-clang")) | .browser_download_url' | head -n1)
-      # Tambahkan opsi retry-wait=5 dan max-tries=10 untuk menangani error transient HTTP 502/503 di GitHub Releases
-      aria2c -x16 -s16 -k1M --retry-wait=5 --max-tries=10 -o clang.tar.gz "$NEUTRON_ASSET"
+      echo "📥 Mengunduh NeutronClang..."
+      NEUTRON_ASSET=$(retry_cmd fetch_release_asset "Neutron-Toolchains/clang-build-catalogue" "neutron-clang")
+      if [ -z "$NEUTRON_ASSET" ]; then
+        {
+          echo "❌ ERROR: Gagal mendapatkan URL NeutronClang!"
+          echo "📋 Detail: Permintaan API GitHub mengembalikan URL aset kosong."
+          echo "🔧 Saran perbaikan: Periksa konektivitas jaringan atau batas tingkat API."
+        } > "$GITHUB_WORKSPACE/kernel/build.log"
+        exit 1
+      fi
+      retry_cmd aria2c -x16 -s16 -k1M --retry-wait=5 --max-tries=10 -o clang.tar.gz "$NEUTRON_ASSET"
       smart_extract clang.tar.gz clang-neutron
       CLANG_PATH="$GITHUB_WORKSPACE/prebuilts/clang/host/linux-x86/clang-neutron"
       echo "CUSTOM_CLANG_PATH=$CLANG_PATH" >> "$GITHUB_ENV"
@@ -178,9 +219,9 @@ download_toolchain() {
       ;;
     *)
       {
-        echo "❌ ERROR: Unknown toolchain: $CLANG_TOOLCHAIN!"
-        echo "📋 Details: Clang toolchain '$CLANG_TOOLCHAIN' is not supported."
-        echo "🔧 Suggested fix: Select a valid compiler (bazel-default, zyc-latest, aosp-latest, weebx-latest, neutron-latest)."
+        echo "❌ ERROR: Toolchain tidak dikenal: $CLANG_TOOLCHAIN!"
+        echo "📋 Detail: Clang toolchain '$CLANG_TOOLCHAIN' tidak didukung."
+        echo "🔧 Saran perbaikan: Pilih kompiler yang valid (bazel-default, zyc-latest, aosp-latest, weebx-latest, neutron-latest)."
       } > "$GITHUB_WORKSPACE/kernel/build.log"
       exit 1
       ;;
@@ -207,32 +248,23 @@ download_toolchain() {
 # ──────────────────────────────────────────────
 sync_kernel() {
   mkdir -p kernel && cd kernel
-  repo init -u https://android.googlesource.com/kernel/manifest \
+  echo "🔧 Menginisialisasi repositori kernel..."
+  retry_cmd repo init -u https://android.googlesource.com/kernel/manifest \
     -b common-${ANDROID_VERSION}-${KERNEL_VERSION} --depth=1
 
-  SYNC_OK=false
-  for attempt in 1 2 3; do
-    echo "repo sync attempt $attempt/3..."
-    if repo sync -c -j$(nproc) --no-tags --no-clone-bundle --force-sync; then
-      SYNC_OK=true
-      break
-    fi
-    echo "⚠️ Sync failed, retrying in 30s..."
-    sleep 30
-  done
-
-  if [ "$SYNC_OK" = "false" ]; then
+  echo "📥 Melakukan sinkronisasi repositori kernel..."
+  if ! retry_cmd repo sync -c -j$(nproc) --no-tags --no-clone-bundle --force-sync; then
     {
       echo "❌ ERROR: repo sync failed!"
-      echo "📋 Details: repo sync failed after 3 attempts due to network or manifest issues."
-      echo "🔧 Suggested fix: Verify Android Common Kernel manifest/branch and try again."
+      echo "📋 Details: repo sync failed after all retries due to network issues."
+      echo "🔧 Suggested fix: Check network status and repository mirror."
     } > "$GITHUB_WORKSPACE/kernel/build.log"
     exit 1
   fi
 
   cd common
   KERNEL_COMMIT=$(git log --oneline -1)
-  echo "✅ Using tip of branch ($KERNEL_COMMIT)"
+  echo "✅ Menggunakan commit ujung cabang ($KERNEL_COMMIT)"
   echo "KERNEL_COMMIT=$KERNEL_COMMIT" >> "$GITHUB_ENV"
   make kernelversion
   cd "$GITHUB_WORKSPACE"
@@ -301,11 +333,11 @@ setup_ksu() {
   if [ "$WITH_SUSFS" = "true" ]; then
     # Kloning fork pershoot branch dev-susfs yang sudah terintegrasi SUSFS secara pre-patched
     echo "Cloning KernelSU-Next (pershoot fork dev-susfs branch)..."
-    git clone https://github.com/pershoot/KernelSU-Next -b dev-susfs KernelSU-Next
+    retry_cmd git clone https://github.com/pershoot/KernelSU-Next -b dev-susfs KernelSU-Next
   else
     # Kloning upstream resmi KernelSU-Next branch dev (branch default utama repo ini) untuk build murni tanpa SUSFS
     echo "Cloning KernelSU-Next (official upstream dev branch)..."
-    git clone https://github.com/KernelSU-Next/KernelSU-Next -b dev KernelSU-Next
+    retry_cmd git clone https://github.com/KernelSU-Next/KernelSU-Next -b dev KernelSU-Next
   fi
 
   if [ ! -d "KernelSU-Next/kernel" ]; then
