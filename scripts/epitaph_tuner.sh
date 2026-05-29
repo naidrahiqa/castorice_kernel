@@ -1,23 +1,37 @@
 #!/system/bin/sh
 # ==============================================================================
-#  Epitaph Kernel Optimization & Reliability Tuner
+#  Epitaph Kernel Optimization & Reliability Tuner (Thermal & Charging Aware)
 #  Designed by Naidrahiqa & Antigravity AI
 #  Epitaph Kernel — Redmi 12 (fire) — GKI 6.6
 # ==============================================================================
 # File ini diletakkan di /data/adb/service.d/epitaph_tuner.sh oleh AnyKernel3
-# Berjalan setiap boot via KernelSU/Magisk service.d
+# Berjalan setiap boot via KernelSU/Magisk service.d atau runtime secara manual
 # ==============================================================================
 
 sleep 5
 
 LOG_FILE="/data/local/tmp/epitaph_tuner.log"
 STATUS_FILE="/data/adb/epitaph/status"
+MODE_FILE="/data/adb/epitaph/mode"
+APPLY_FILE="/data/adb/epitaph/apply"
+
+# Direktori logging terdedikasi
 mkdir -p /data/local/tmp 2>/dev/null
 mkdir -p /data/adb/epitaph 2>/dev/null
+mkdir -p /data/epitaph 2>/dev/null
+
 chmod 644 "$LOG_FILE" 2>/dev/null
 
 log_msg() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+log_thermal() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "/data/epitaph/thermal.log"
+}
+
+log_charging() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "/data/epitaph/charging.log"
 }
 
 # Helper: menulis ke sysfs/procfs secara aman tanpa warning
@@ -38,254 +52,292 @@ copy_value() {
   fi
 }
 
-log_msg "=== EPITAPH TUNER STARTED ==="
-
-# Inisialisasi folder profil Epitaph Schedutil Performance
-MODE_FILE="/data/adb/epitaph/mode"
-APPLY_FILE="/data/adb/epitaph/apply"
-
-if [ ! -f "$MODE_FILE" ]; then
-  echo "balanced" > "$MODE_FILE"
-  chmod 644 "$MODE_FILE" 2>/dev/null
-fi
-
-MODE=$(cat "$MODE_FILE" | tr -d ' \r\n')
-if [ "$MODE" != "performance" ] && [ "$MODE" != "balanced" ] && [ "$MODE" != "battery" ]; then
-  MODE="balanced"
-fi
-
-log_msg "Selected Profile: $MODE"
-
-# Membuat skrip trigger untuk apply real-time tanpa reboot
-cat << 'EOF' > "$APPLY_FILE"
-#!/system/bin/sh
-# Trigger re-apply Epitaph Schedutil profile real-time tanpa reboot
-/system/bin/sh /data/adb/service.d/epitaph_tuner.sh
-EOF
-chmod 755 "$APPLY_FILE" 2>/dev/null
-
 # ──────────────────────────────────────────────────────────────────────────────
-# 1. COMPREHENSIVE WIFI MODULE LOADER & RECOVERY
+# DAEMON SUBROUTINES (Mencegah Eksekusi Ganda via Daemon Flag)
 # ──────────────────────────────────────────────────────────────────────────────
-log_msg "Section 1: WiFi Module Recovery System starting..."
 
-try_load_module() {
-  local mod_path="$1"
-  local filename="${mod_path##*/}"
-  local mod_name="${filename%.ko}"
-  if [ ! -f "$mod_path" ]; then
-    log_msg "  [SKIP] $mod_path tidak ditemukan"
-    return 1
-  fi
-  if lsmod | grep -q "^${mod_name}"; then
-    log_msg "  [OK] $mod_name sudah termuat"
-    return 0
-  fi
-  local err
-  err=$(insmod "$mod_path" 2>&1)
-  if [ $? -eq 0 ]; then
-    log_msg "  [LOADED] $mod_name dari $mod_path"
-    return 0
-  else
-    log_msg "  [FAIL] $mod_name: $err"
-    return 1
-  fi
-}
-
-CFG_LOADED=false
-if lsmod | grep -q cfg80211; then
-  log_msg "cfg80211 sudah termuat oleh init"
-  CFG_LOADED=true
-else
-  log_msg "cfg80211 BELUM termuat — mencoba memuat secara manual..."
-  for search_dir in \
-    /vendor/lib/modules \
-    /vendor_dlkm/lib/modules \
-    /data/adb/wifi_fix \
-    /system_dlkm/lib/modules \
-    /lib/modules; do
-    if [ -f "$search_dir/cfg80211.ko" ]; then
-      try_load_module "$search_dir/rfkill.ko"
-      try_load_module "$search_dir/libarc4.ko"
-      try_load_module "$search_dir/cfg80211.ko"
-      if lsmod | grep -q cfg80211; then
-        CFG_LOADED=true
-        log_msg "cfg80211 berhasil dimuat dari $search_dir"
-        try_load_module "$search_dir/mac80211.ko"
+# 1. Thermal-Aware Daemon Loop
+thermal_daemon() {
+  log_thermal "=== THERMAL DAEMON STARTED ==="
+  local last_state=""
+  
+  # Identifikasi CPU thermal zone dinamis untuk Helio G88 (MT6769)
+  local cpu_zone=""
+  for tz in /sys/class/thermal/thermal_zone*; do
+    if [ -f "$tz/type" ]; then
+      local type=$(cat "$tz/type" | tr '[:upper:]' '[:lower:]')
+      if echo "$type" | grep -qE "cpu|soc|mtktscpu"; then
+        cpu_zone="$tz"
         break
       fi
     fi
   done
-fi
-
-WLAN_LOADED=false
-if lsmod | grep -qE "wlan_drv_gen4m"; then
-  log_msg "Vendor WiFi driver (wlan_drv_gen4m/6768) sudah termuat"
-  WLAN_LOADED=true
-elif [ "$CFG_LOADED" = "true" ]; then
-  log_msg "Memuat vendor WiFi driver..."
-  for wlan_dir in \
-    /vendor/lib/modules \
-    /vendor_dlkm/lib/modules; do
-    for wlan_file in wlan_drv_gen4m_6768.ko wlan_drv_gen4m.ko; do
-      if [ -f "$wlan_dir/$wlan_file" ]; then
-        try_load_module "$wlan_dir/$wlan_file"
-        if lsmod | grep -qE "wlan_drv_gen4m"; then
-          WLAN_LOADED=true
-          log_msg "Vendor WiFi driver ($wlan_file) termuat dari $wlan_dir"
-          break 2
-        fi
-      fi
-    done
-  done
-  if [ "$WLAN_LOADED" = "false" ]; then
-    log_msg "insmod gagal, mencoba modprobe wlan_drv_gen4m_6768..."
-    modprobe wlan_drv_gen4m_6768 2>/dev/null && WLAN_LOADED=true && log_msg "modprobe wlan_drv_gen4m_6768 berhasil"
-  fi
-  if [ "$WLAN_LOADED" = "false" ]; then
-    log_msg "mencoba modprobe wlan_drv_gen4m..."
-    modprobe wlan_drv_gen4m 2>/dev/null && WLAN_LOADED=true && log_msg "modprobe wlan_drv_gen4m berhasil"
-  fi
-fi
-
-if [ "$CFG_LOADED" = "true" ]; then
-  WLAN_IFACE=$(getprop wifi.interface 2>/dev/null)
-  WLAN_STATUS=$(getprop wlan.driver.status 2>/dev/null)
-  log_msg "WiFi interface: ${WLAN_IFACE:-none}, driver status: ${WLAN_STATUS:-unknown}"
-
-  if [ "$WLAN_STATUS" != "ok" ]; then
-    log_msg "WiFi driver status tidak OK, melakukan restart service..."
-    svc wifi disable 2>/dev/null
-    sleep 1
-    svc wifi enable 2>/dev/null
-    sleep 2
-    WLAN_STATUS_AFTER=$(getprop wlan.driver.status 2>/dev/null)
-    log_msg "WiFi status setelah restart: ${WLAN_STATUS_AFTER:-unknown}"
-  fi
-else
-  log_msg "WARNING: cfg80211 GAGAL dimuat! WiFi/Hotspot tidak akan berfungsi."
-  lsmod >> "$LOG_FILE" 2>/dev/null
-fi
-
-log_msg "WiFi Recovery Summary: cfg80211=$CFG_LOADED, wlan_vendor=$WLAN_LOADED"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 2. CPU SCHEDUTIL GOVERNOR OPTIMIZATIONS
-# ──────────────────────────────────────────────────────────────────────────────
-log_msg "Section 2: Tuning CPU Schedutil governors untuk profil: $MODE"
-
-UP_RATE=500
-DOWN_RATE=10000
-
-case "$MODE" in
-  performance)
-    UP_RATE=100
-    DOWN_RATE=40000
-    ;;
-  battery)
-    UP_RATE=2000
-    DOWN_RATE=1000
-    ;;
-  balanced|*)
-    UP_RATE=500
-    DOWN_RATE=10000
-    ;;
-esac
-
-for policy in /sys/devices/system/cpu/cpufreq/policy*; do
-  if [ -f "$policy/scaling_governor" ]; then
-    gov=$(cat "$policy/scaling_governor")
-    if [ "$gov" = "schedutil" ]; then
-      write_value "$UP_RATE" "$policy/schedutil/up_rate_limit_us"
-      write_value "$DOWN_RATE" "$policy/schedutil/down_rate_limit_us"
-      
-      # Nilai boost kustom untuk Epitaph Schedutil
-      p_num="${policy##*policy}"
-      b_factor=0
-      b_threshold=95
-      
-      if [ "$p_num" -eq 6 ]; then
-        # Kebijakan 6 (big cores: Cortex-A75)
-        case "$MODE" in
-          performance)
-            b_factor=40
-            b_threshold=30
-            ;;
-          battery)
-            b_factor=0
-            b_threshold=95
-            ;;
-          balanced|*)
-            b_factor=15
-            b_threshold=60
-            ;;
-        esac
-      else
-        # Kebijakan 0 (LITTLE cores: Cortex-A55)
-        case "$MODE" in
-          performance)
-            b_factor=15
-            b_threshold=60
-            ;;
-          battery)
-            b_factor=0
-            b_threshold=95
-            ;;
-          balanced|*)
-            b_factor=5
-            b_threshold=80
-            ;;
-        esac
-      fi
-      
-      write_value "$b_factor" "$policy/schedutil/epitaph_boost_factor"
-      write_value "$b_threshold" "$policy/schedutil/epitaph_boost_threshold"
-      log_msg "Tuned $policy (schedutil): up=$UP_RATE, down=$DOWN_RATE, boost_factor=$b_factor, boost_threshold=$b_threshold"
-    fi
-  fi
-done
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 3. DYNAMIC GPU TUNING (GED & MALI CONTROLS)
-# ──────────────────────────────────────────────────────────────────────────────
-log_msg "Section 3: Mengoptimalkan GPU secara dinamis untuk profil: $MODE..."
-
-GPU_BOOST=0
-BOOST_GPU_ENABLE=0
-MALI_POWER_POLICY="dynamic"
-
-case "$MODE" in
-  performance)
-    GPU_BOOST=1
-    BOOST_GPU_ENABLE=1
-    MALI_POWER_POLICY="always_on"
-    ;;
-  battery)
-    GPU_BOOST=0
-    BOOST_GPU_ENABLE=0
-    MALI_POWER_POLICY="coarse_demand"
-    ;;
-  balanced|*)
-    GPU_BOOST=0
-    BOOST_GPU_ENABLE=1
-    MALI_POWER_POLICY="dynamic"
-    ;;
-esac
-
-# Terapkan konfigurasi GED (GPU Execution Daemon) MTK
-if [ -d /sys/kernel/ged/hal ]; then
-  write_value "$GPU_BOOST" /sys/kernel/ged/hal/gpu_boost
-  write_value "$BOOST_GPU_ENABLE" /sys/module/ged/parameters/boost_gpu_enable
-  log_msg "GED GPU settings applied: gpu_boost=$GPU_BOOST, boost_gpu_enable=$BOOST_GPU_ENABLE"
-fi
-
-# Terapkan Mali GPU driver power policy
-for mali_dir in /sys/class/misc/mali0/device /sys/devices/platform/*.mali; do
-  if [ -d "$mali_dir" ]; then
-    write_value "$MALI_POWER_POLICY" "$mali_dir/power_policy"
+  
+  [ -z "$cpu_zone" ] && cpu_zone="/sys/class/thermal/thermal_zone0"
+  log_thermal "Thermal zone terpilih: $cpu_zone ($(cat $cpu_zone/type 2>/dev/null || echo 'unknown'))"
+  
+  while true; do
+    local temp_raw=$(cat "$cpu_zone/temp" 2>/dev/null || echo "0")
+    local temp=$((temp_raw / 1000))
+    local current_state="WARM"
     
-    # Jika di mode performance, buka limit frekuensi GPU ke maksimum
-    if [ "$MODE" = "performance" ]; then
+    if [ "$temp" -lt 40 ]; then
+      current_state="COOL"
+    elif [ "$temp" -gt 55 ]; then
+      current_state="HOT"
+    else
+      current_state="WARM"
+    fi
+    
+    # Deteksi transisi status thermal
+    if [ "$current_state" != "$last_state" ]; then
+      log_thermal "Transisi Suhu: ${last_state:-NONE} -> ${current_state} (${temp}°C)"
+      last_state="$current_state"
+      echo "$current_state" > "/data/adb/epitaph/thermal_state" 2>/dev/null
+      
+      # Terapkan pembatasan thermal governor & clock secara dinamis
+      apply_thermal_tuning "$current_state"
+    fi
+    
+    # Jalankan pengecekan memory pressure LMKD dinamis di loop yang sama
+    tune_lmkd
+    
+    sleep 10
+  done
+}
+
+# 2. Charging-State Boost Daemon Loop
+charging_daemon() {
+  log_charging "=== CHARGING DAEMON STARTED ==="
+  local last_status=""
+  
+  while true; do
+    local status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d ' \r\n')
+    [ -z "$status" ] && status="Discharging"
+    
+    if [ "$status" != "$last_status" ]; then
+      log_charging "Transisi Daya: ${last_status:-NONE} -> ${status}"
+      last_status="$status"
+      
+      local therm_state=$(cat "/data/adb/epitaph/thermal_state" 2>/dev/null || echo "WARM")
+      
+      if [ "$status" = "Charging" ] || [ "$status" = "Full" ]; then
+        if [ "$therm_state" = "HOT" ]; then
+          log_charging "🚨 Suhu terlalu panas (${therm_state}). Boost pengisian daya dilewati."
+          revert_charging_boost
+        else
+          apply_charging_boost
+        fi
+      else
+        revert_charging_boost
+      fi
+    fi
+    
+    # Proteksi real-time jika perangkat tiba-tiba memanas saat dicas
+    if [ "$status" = "Charging" ] || [ "$status" = "Full" ]; then
+      local therm_state=$(cat "/data/adb/epitaph/thermal_state" 2>/dev/null || echo "WARM")
+      local boost_active=$(cat "/data/adb/epitaph/charging_boost_active" 2>/dev/null || echo "false")
+      
+      if [ "$therm_state" = "HOT" ] && [ "$boost_active" = "true" ]; then
+        log_charging "🚨 Perangkat memanas saat dicas! Mencabut boost pengisian daya secara darurat."
+        revert_charging_boost
+      elif [ "$therm_state" != "HOT" ] && [ "$boost_active" = "false" ]; then
+        log_charging "⚡ Suhu stabil kembali. Menerapkan ulang boost pengisian daya."
+        apply_charging_boost
+      fi
+    fi
+    
+    sleep 10
+  done
+}
+
+# Tangkap flag daemon sebelum inisialisasi utama untuk menghindari instansiasi ganda
+if [ "$1" = "--thermal-daemon" ]; then
+  thermal_daemon
+  exit 0
+elif [ "$1" = "--charging-daemon" ]; then
+  charging_daemon
+  exit 0
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3-MODE POWER PROFILE DEFINITIONS (Helio G88 Optimizations)
+# ──────────────────────────────────────────────────────────────────────────────
+
+battery() {
+  log_msg "Tuning profile: battery"
+  
+  # CPU Frequency Caps (A55 Little Core & A75 Big Core)
+  # LITTLE Cluster (policy0) batasi max ke 1.38GHz
+  write_value 500000 /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq
+  write_value 1380000 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+  
+  # BIG Cluster (policy6) batasi max ke 1.38GHz
+  write_value 900000 /sys/devices/system/cpu/cpufreq/policy6/scaling_min_freq
+  write_value 1380000 /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
+  
+  # Schedutil Conservativeness
+  for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+    if [ -f "$policy/scaling_governor" ] && [ "$(cat $policy/scaling_governor)" = "schedutil" ]; then
+      write_value 2000 "$policy/schedutil/up_rate_limit_us"
+      write_value 1000 "$policy/schedutil/down_rate_limit_us"
+      write_value 95 "$policy/schedutil/hispeed_load"
+      
+      # Tentukan frekuensi hispeed hemat
+      p_num="${policy##*policy}"
+      if [ "$p_num" -eq 6 ]; then
+        write_value 1150000 "$policy/schedutil/hispeed_freq"
+        write_value 0 "$policy/schedutil/epitaph_boost_factor"
+        write_value 95 "$policy/schedutil/epitaph_boost_threshold"
+      else
+        write_value 1100000 "$policy/schedutil/hispeed_freq"
+        write_value 0 "$policy/schedutil/epitaph_boost_factor"
+        write_value 95 "$policy/schedutil/epitaph_boost_threshold"
+      fi
+    fi
+  done
+  
+  # CPU Uclamp - Maksimal Penghematan Baterai
+  write_value 0 /dev/cpuctl/cpu.uclamp.min
+  write_value 0 /dev/cpuctl/top-app/cpu.uclamp.min
+  write_value 0 /dev/cpuctl/foreground/cpu.uclamp.min
+  write_value 0 /dev/cpuctl/background/cpu.uclamp.min
+  write_value 0 /dev/cpuctl/system-background/cpu.uclamp.min
+  
+  # GPU Mali & GED Power Saving Settings
+  write_value 0 /sys/kernel/ged/hal/gpu_boost
+  write_value 0 /sys/module/ged/parameters/boost_gpu_enable
+  for mali_dir in /sys/class/misc/mali0/device /sys/devices/platform/*.mali; do
+    if [ -d "$mali_dir" ]; then
+      write_value "coarse_demand" "$mali_dir/power_policy"
+    fi
+  done
+  
+  # Virtual Memory (Swappiness Rendah, Flush Agresif)
+  write_value 160 /proc/sys/vm/swappiness
+  write_value 20 /proc/sys/vm/dirty_ratio
+  write_value 5 /proc/sys/vm/dirty_background_ratio
+  write_value 300 /proc/sys/vm/dirty_writeback_centisecs
+  write_value 2000 /proc/sys/vm/dirty_expire_centisecs
+  
+  # EAS Scheduler Latency (Batasi Siklus Bangun CPU)
+  write_value 24000000 /proc/sys/kernel/sched_latency_ns
+  write_value 4000000 /proc/sys/kernel/sched_min_granularity_ns
+  write_value 6000000 /proc/sys/kernel/sched_wakeup_granularity_ns
+  
+  # Cpuset (Batasi Latar Belakang ke Little Core)
+  write_value "0-5" /dev/cpuset/background/cpus
+  write_value "0-5" /dev/cpuset/system-background/cpus
+  write_value "0-5" /dev/cpuset/restricted/cpus
+}
+
+balanced() {
+  log_msg "Tuning profile: balanced"
+  
+  # CPU Frequency (Full Range untuk Little & Big)
+  write_value 500000 /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq
+  write_value 1800000 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+  
+  write_value 900000 /sys/devices/system/cpu/cpufreq/policy6/scaling_min_freq
+  write_value 2000000 /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
+  
+  # Schedutil Balanced Values
+  for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+    if [ -f "$policy/scaling_governor" ] && [ "$(cat $policy/scaling_governor)" = "schedutil" ]; then
+      write_value 500 "$policy/schedutil/up_rate_limit_us"
+      write_value 10000 "$policy/schedutil/down_rate_limit_us"
+      write_value 85 "$policy/schedutil/hispeed_load"
+      
+      p_num="${policy##*policy}"
+      if [ "$p_num" -eq 6 ]; then
+        write_value 1500000 "$policy/schedutil/hispeed_freq"
+        write_value 15 "$policy/schedutil/epitaph_boost_factor"
+        write_value 60 "$policy/schedutil/epitaph_boost_threshold"
+      else
+        write_value 1380000 "$policy/schedutil/hispeed_freq"
+        write_value 5 "$policy/schedutil/epitaph_boost_factor"
+        write_value 80 "$policy/schedutil/epitaph_boost_threshold"
+      fi
+    fi
+  done
+  
+  # CPU Uclamp - Responsif tapi Ramah Baterai
+  write_value 0 /dev/cpuctl/cpu.uclamp.min
+  write_value 64 /dev/cpuctl/top-app/cpu.uclamp.min
+  write_value 16 /dev/cpuctl/foreground/cpu.uclamp.min
+  write_value 0 /dev/cpuctl/background/cpu.uclamp.min
+  write_value 0 /dev/cpuctl/system-background/cpu.uclamp.min
+  
+  # GPU Mali & GED Balanced Settings
+  write_value 0 /sys/kernel/ged/hal/gpu_boost
+  write_value 1 /sys/module/ged/parameters/boost_gpu_enable
+  for mali_dir in /sys/class/misc/mali0/device /sys/devices/platform/*.mali; do
+    if [ -d "$mali_dir" ]; then
+      write_value "dynamic" "$mali_dir/power_policy"
+    fi
+  done
+  
+  # Virtual Memory Balanced
+  write_value 180 /proc/sys/vm/swappiness
+  write_value 15 /proc/sys/vm/dirty_ratio
+  write_value 3 /proc/sys/vm/dirty_background_ratio
+  write_value 150 /proc/sys/vm/dirty_writeback_centisecs
+  write_value 1000 /proc/sys/vm/dirty_expire_centisecs
+  
+  # EAS Scheduler Latency Balanced
+  write_value 16000000 /proc/sys/kernel/sched_latency_ns
+  write_value 3000000 /proc/sys/kernel/sched_min_granularity_ns
+  write_value 4000000 /proc/sys/kernel/sched_wakeup_granularity_ns
+  
+  # Cpuset Balanced
+  write_value "0-5" /dev/cpuset/background/cpus
+  write_value "0-5" /dev/cpuset/system-background/cpus
+  write_value "0-5" /dev/cpuset/restricted/cpus
+}
+
+performance() {
+  log_msg "Tuning profile: performance"
+  
+  # CPU Frequency (Buka Limit Bawah Core untuk Menghilangkan Stutter)
+  write_value 700000 /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq
+  write_value 1800000 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+  
+  write_value 1150000 /sys/devices/system/cpu/cpufreq/policy6/scaling_min_freq
+  write_value 2000000 /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
+  
+  # Schedutil Performance Values
+  for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+    if [ -f "$policy/scaling_governor" ] && [ "$(cat $policy/scaling_governor)" = "schedutil" ]; then
+      write_value 100 "$policy/schedutil/up_rate_limit_us"
+      write_value 40000 "$policy/schedutil/down_rate_limit_us"
+      write_value 75 "$policy/schedutil/hispeed_load"
+      
+      p_num="${policy##*policy}"
+      if [ "$p_num" -eq 6 ]; then
+        write_value 1850000 "$policy/schedutil/hispeed_freq"
+        write_value 40 "$policy/schedutil/epitaph_boost_factor"
+        write_value 30 "$policy/schedutil/epitaph_boost_threshold"
+      else
+        write_value 1600000 "$policy/schedutil/hispeed_freq"
+        write_value 15 "$policy/schedutil/epitaph_boost_factor"
+        write_value 60 "$policy/schedutil/epitaph_boost_threshold"
+      fi
+    fi
+  done
+  
+  # CPU Uclamp - Responsivitas Maksimal untuk UI & Game (Tidak 1024 agar deepsleep aktif)
+  write_value 0 /dev/cpuctl/cpu.uclamp.min
+  write_value 180 /dev/cpuctl/top-app/cpu.uclamp.min
+  write_value 64 /dev/cpuctl/foreground/cpu.uclamp.min
+  write_value 0 /dev/cpuctl/background/cpu.uclamp.min
+  write_value 0 /dev/cpuctl/system-background/cpu.uclamp.min
+  
+  # GPU Mali & GED High Boost Settings
+  write_value 1 /sys/kernel/ged/hal/gpu_boost
+  write_value 1 /sys/module/ged/parameters/boost_gpu_enable
+  for mali_dir in /sys/class/misc/mali0/device /sys/devices/platform/*.mali; do
+    if [ -d "$mali_dir" ]; then
+      write_value "always_on" "$mali_dir/power_policy"
       if [ -f "$mali_dir/dvfs_max_freq" ]; then
         if [ -f "$mali_dir/dvfs_max_freq_khz" ]; then
           copy_value "$mali_dir/dvfs_max_freq_khz" "$mali_dir/dvfs_max_freq"
@@ -294,269 +346,346 @@ for mali_dir in /sys/class/misc/mali0/device /sys/devices/platform/*.mali; do
         fi
       fi
     fi
-    log_msg "Mali GPU power_policy set to $MALI_POWER_POLICY for $mali_dir"
+  done
+  
+  # Virtual Memory (Swappiness Tinggi untuk ZRAM, Sinkronisasi I/O Sangat Cepat)
+  write_value 200 /proc/sys/vm/swappiness
+  write_value 10 /proc/sys/vm/dirty_ratio
+  write_value 2 /proc/sys/vm/dirty_background_ratio
+  write_value 100 /proc/sys/vm/dirty_writeback_centisecs
+  write_value 500 /proc/sys/vm/dirty_expire_centisecs
+  
+  # EAS Scheduler Latency Rendah (Menghindari Frame Drop)
+  write_value 10000000 /proc/sys/kernel/sched_latency_ns
+  write_value 1500000 /proc/sys/kernel/sched_min_granularity_ns
+  write_value 2000000 /proc/sys/kernel/sched_wakeup_granularity_ns
+  
+  # Cpuset (Buka Semua Core untuk Background Services)
+  write_value "0-7" /dev/cpuset/background/cpus
+  write_value "0-7" /dev/cpuset/system-background/cpus
+  write_value "0-7" /dev/cpuset/restricted/cpus
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# THERMAL-AWARE DYNAMIC SCALING
+# ──────────────────────────────────────────────────────────────────────────────
+
+apply_thermal_tuning() {
+  local state="$1"
+  log_thermal "Menerapkan limit thermal state: $state"
+  
+  case "$state" in
+    COOL)
+      # Kembalikan clock maksimal dan kurangi up_rate_limit untuk akselerasi instan
+      write_value 1800000 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+      write_value 2000000 /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
+      
+      for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+        if [ -f "$policy/schedutil/up_rate_limit_us" ]; then
+          if [ "$MODE" = "performance" ]; then
+            write_value 100 "$policy/schedutil/up_rate_limit_us"
+          else
+            write_value 500 "$policy/schedutil/up_rate_limit_us"
+          fi
+        fi
+      done
+      ;;
+      
+    WARM)
+      # Profil standar harian
+      write_value 1800000 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+      write_value 2000000 /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
+      
+      for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+        if [ -f "$policy/schedutil/up_rate_limit_us" ]; then
+          if [ "$MODE" = "performance" ]; then
+            write_value 100 "$policy/schedutil/up_rate_limit_us"
+          elif [ "$MODE" = "battery" ]; then
+            write_value 2000 "$policy/schedutil/up_rate_limit_us"
+          else
+            write_value 500 "$policy/schedutil/up_rate_limit_us"
+          fi
+        fi
+      done
+      ;;
+      
+    HOT)
+      # Throttling Aktif: Pangkas clock atas untuk mencegah hardware degradation
+      log_thermal "🚨 THROTILING AKTIF: Batasi frekuensi maksimal core!"
+      write_value 1500000 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+      write_value 1600000 /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
+      
+      # Naikkan rate_limit untuk menstabilkan voltase/suhu
+      for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+        write_value 2000 "$policy/schedutil/up_rate_limit_us"
+      done
+      
+      # Turunkan swappiness untuk mengurangi beban kerja CPU dari kompresi ZRAM intensif
+      write_value 100 /proc/sys/vm/swappiness
+      ;;
+  esac
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CHARGING-STATE BOOST SCALING
+# ──────────────────────────────────────────────────────────────────────────────
+
+apply_charging_boost() {
+  echo "true" > "/data/adb/epitaph/charging_boost_active" 2>/dev/null
+  log_charging "⚡ Mengaktifkan OC Charging Boost!"
+  
+  # Buka frekuensi maksimal dan percepat lompatan frekuensi
+  write_value 1800000 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+  write_value 2000000 /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
+  
+  for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+    write_value 100 "$policy/schedutil/up_rate_limit_us"
+    write_value 40000 "$policy/schedutil/down_rate_limit_us"
+  done
+  
+  # Dorong clock GPU agar tetap stabil saat beban berat serentak
+  write_value 1 /sys/kernel/ged/hal/gpu_boost
+}
+
+revert_charging_boost() {
+  echo "false" > "/data/adb/epitaph/charging_boost_active" 2>/dev/null
+  log_charging "🔋 Menormalkan profil pengisian daya (kembali ke profil user: $MODE)"
+  
+  # Re-apply mode aktif saat ini untuk menormalkan governor
+  apply_profile "$MODE"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DYNAMIC LOW MEMORY KILLER (LMKD) TUNING (4-6GB RAM Variants)
+# ──────────────────────────────────────────────────────────────────────────────
+
+tune_lmkd() {
+  local mem_avail_kb=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
+  local mem_avail_mb=$((mem_avail_kb / 1024))
+  
+  local pressure_tier="comfortable"
+  if [ "$mem_avail_mb" -lt 400 ]; then
+    pressure_tier="tight"
+  elif [ "$mem_avail_mb" -lt 800 ]; then
+    pressure_tier="moderate"
+  else
+    pressure_tier="comfortable"
   fi
-done
+  
+  local minfree_pages=""
+  
+  case "$MODE" in
+    performance)
+      # Simpan aplikasi sebanyak mungkin di latar belakang untuk pengalaman multitasking yang mulus
+      case "$pressure_tier" in
+        comfortable)
+          # Sangat santai: 48MB, 64MB, 80MB, 96MB, 128MB, 180MB
+          minfree_pages="12288,16384,20480,24576,32768,46080"
+          ;;
+        moderate)
+          # Sedang: 72MB, 90MB, 108MB, 126MB, 180MB, 240MB
+          minfree_pages="18432,23040,27648,32256,46080,61440"
+          ;;
+        tight)
+          # Agresif (menghindari OOM freeze): 90MB, 110MB, 130MB, 150MB, 220MB, 320MB
+          minfree_pages="23040,28160,33280,38400,56320,81920"
+          ;;
+      esac
+      ;;
+    battery)
+      # Agresif mematikan aplikasi latar belakang untuk menghemat daya konsumsi idle
+      case "$pressure_tier" in
+        comfortable)
+          # Cukup ketat: 72MB, 90MB, 108MB, 126MB, 200MB, 280MB
+          minfree_pages="18432,23040,27648,32256,51200,71680"
+          ;;
+        moderate)
+          # Ketat: 90MB, 110MB, 130MB, 160MB, 240MB, 350MB
+          minfree_pages="23040,28160,33280,40960,61440,89600"
+          ;;
+        tight)
+          # Sangat agresif: 120MB, 140MB, 180MB, 220MB, 320MB, 450MB
+          minfree_pages="30720,35840,46080,56320,81920,115200"
+          ;;
+      esac
+      ;;
+    balanced|*)
+      # Profil seimbang standar untuk penggunaan harian
+      case "$pressure_tier" in
+        comfortable)
+          # 60MB, 80MB, 100MB, 120MB, 160MB, 220MB
+          minfree_pages="15360,20480,25600,30720,40960,56320"
+          ;;
+        moderate)
+          # 72MB, 90MB, 108MB, 135MB, 200MB, 300MB
+          minfree_pages="18432,23040,27648,34560,51200,76800"
+          ;;
+        tight)
+          # 96MB, 120MB, 150MB, 180MB, 270MB, 380MB
+          minfree_pages="24576,30720,38400,46080,69120,97280"
+          ;;
+      esac
+      ;;
+  esac
+  
+  # Terapkan ke parameter driver lowmemorykiller kernel jika aktif
+  if [ -e "/sys/module/lowmemorykiller/parameters/minfree" ]; then
+    write_value "$minfree_pages" /sys/module/lowmemorykiller/parameters/minfree
+  fi
+  
+  # Setel Android LMKD properti level minfree dinamis
+  setprop sys.lmk.minfree_levels "$minfree_pages" 2>/dev/null
+}
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4. CPU UCLAMP DYNAMIC TUNING (MEMPERBAIKI DEEP SLEEP / DRAIN BATRE)
+# SYSTEM INITIALIZATION & MAIN EXECUTION
 # ──────────────────────────────────────────────────────────────────────────────
-# Masalah: uclamp.min di-set ke 1024 (maksimum) memaksa CPU berjalan pada clock tertinggi,
-# menghalangi CPU masuk ke mode deep sleep. Kita reset & set nilai uclamp secara dinamis.
-log_msg "Section 4: Menyetel CPU Uclamp secara dinamis untuk profil: $MODE"
 
-UCLAMP_MIN_TOP_APP=64
-UCLAMP_MIN_FOREGROUND=16
-UCLAMP_MIN_BACKGROUND=0
-UCLAMP_MIN_SYSTEM_BACKGROUND=0
-UCLAMP_MIN_GLOBAL=0
+apply_profile() {
+  local target_mode="$1"
+  log_msg "Menerapkan profil daya utama: $target_mode"
+  case "$target_mode" in
+    battery)
+      battery
+      ;;
+    performance)
+      performance
+      ;;
+    balanced|*)
+      balanced
+      ;;
+  esac
+  
+  # Sinkronisasi status persistensi profil
+  echo "$target_mode" > "$MODE_FILE" 2>/dev/null
+}
 
-case "$MODE" in
-  performance)
-    # Memberikan dorongan UI responsif, tetapi batasi maksimal 180 (tidak 1024!) agar deep sleep tidak mati
-    UCLAMP_MIN_TOP_APP=180
-    UCLAMP_MIN_FOREGROUND=64
-    UCLAMP_MIN_BACKGROUND=0
-    UCLAMP_MIN_SYSTEM_BACKGROUND=0
-    UCLAMP_MIN_GLOBAL=0
-    ;;
-  battery)
-    # Maksimalkan penghematan batre, matikan uclamp min
-    UCLAMP_MIN_TOP_APP=0
-    UCLAMP_MIN_FOREGROUND=0
-    UCLAMP_MIN_BACKGROUND=0
-    UCLAMP_MIN_SYSTEM_BACKGROUND=0
-    UCLAMP_MIN_GLOBAL=0
-    ;;
-  balanced|*)
-    # Nilai optimal untuk harian, hemat baterai dengan UI tetap mulus
-    UCLAMP_MIN_TOP_APP=64
-    UCLAMP_MIN_FOREGROUND=16
-    UCLAMP_MIN_BACKGROUND=0
-    UCLAMP_MIN_SYSTEM_BACKGROUND=0
-    UCLAMP_MIN_GLOBAL=0
-    ;;
-esac
+log_msg "=== EPITAPH TUNER TUNING IN PROGRESS ==="
 
-# Terapkan Uclamp ke cgroup scheduler Android
-write_value "$UCLAMP_MIN_GLOBAL" /dev/cpuctl/cpu.uclamp.min
-write_value "$UCLAMP_MIN_TOP_APP" /dev/cpuctl/top-app/cpu.uclamp.min
-write_value "$UCLAMP_MIN_FOREGROUND" /dev/cpuctl/foreground/cpu.uclamp.min
-write_value "$UCLAMP_MIN_BACKGROUND" /dev/cpuctl/background/cpu.uclamp.min
-write_value "$UCLAMP_MIN_SYSTEM_BACKGROUND" /dev/cpuctl/system-background/cpu.uclamp.min
+# 1. WIFI MODULE LOADER & RECOVERY (MEMPERTAHANKAN COMPATIBILITY DARI PENYEDOT LAMA)
+log_msg "Langkah 1: Menjalankan WiFi Module Loader..."
+CFG_LOADED=false
+if lsmod | grep -q cfg80211; then
+  log_msg "cfg80211 sudah termuat"
+  CFG_LOADED=true
+else
+  for search_dir in /vendor/lib/modules /vendor_dlkm/lib/modules /data/adb/wifi_fix; do
+    if [ -f "$search_dir/cfg80211.ko" ]; then
+      insmod "$search_dir/rfkill.ko" 2>/dev/null
+      insmod "$search_dir/libarc4.ko" 2>/dev/null
+      insmod "$search_dir/cfg80211.ko" 2>/dev/null
+      if lsmod | grep -q cfg80211; then
+        CFG_LOADED=true
+        insmod "$search_dir/mac80211.ko" 2>/dev/null
+        break
+      fi
+    fi
+  done
+fi
 
-# Pastikan uclamp max tetap di 1024 agar CPU dapat naik ke frekuensi penuh saat dibutuhkan
-write_value 1024 /dev/cpuctl/cpu.uclamp.max
-write_value 1024 /dev/cpuctl/top-app/cpu.uclamp.max
-write_value 1024 /dev/cpuctl/foreground/cpu.uclamp.max
-write_value 1024 /dev/cpuctl/background/cpu.uclamp.max
-write_value 1024 /dev/cpuctl/system-background/cpu.uclamp.max
+WLAN_LOADED=false
+if lsmod | grep -qE "wlan_drv_gen4m"; then
+  log_msg "Vendor WiFi driver sudah termuat"
+  WLAN_LOADED=true
+elif [ "$CFG_LOADED" = "true" ]; then
+  for wlan_dir in /vendor/lib/modules /vendor_dlkm/lib/modules; do
+    for wlan_file in wlan_drv_gen4m_6768.ko wlan_drv_gen4m.ko; do
+      if [ -f "$wlan_dir/$wlan_file" ]; then
+        insmod "$wlan_dir/$wlan_file" 2>/dev/null
+        if lsmod | grep -qE "wlan_drv_gen4m"; then
+          WLAN_LOADED=true
+          break 2
+        fi
+      fi
+    done
+  done
+fi
 
-log_msg "Uclamp Min applied: global=$UCLAMP_MIN_GLOBAL, top-app=$UCLAMP_MIN_TOP_APP, foreground=$UCLAMP_MIN_FOREGROUND"
+# 2. BACALAH PROP SISTEM DAN MODE PERSISTEN
+PROP_MODE=$(getprop epitaph.profile 2>/dev/null | tr -d ' \r\n')
+if [ -n "$PROP_MODE" ]; then
+  MODE="$PROP_MODE"
+else
+  MODE=$(cat "$MODE_FILE" 2>/dev/null | tr -d ' \r\n')
+fi
 
-# Matikan logging suspend berlebih untuk mempercepat masuk deep sleep
-write_value 0 /sys/module/wakeup/parameters/enable_wakeup_log
+[ -z "$MODE" ] && MODE="balanced"
+if [ "$MODE" != "performance" ] && [ "$MODE" != "balanced" ] && [ "$MODE" != "battery" ]; then
+  MODE="balanced"
+fi
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 5. ZRAM & VIRTUAL MEMORY TUNING
-# ──────────────────────────────────────────────────────────────────────────────
-# Konfigurasi: ZRAM 6GB, compressor zstd, swappiness dinamis, dirty ratio 20
-log_msg "Section 5: Tuning ZRAM & Virtual Memory..."
+# Terapkan profil utama
+apply_profile "$MODE"
 
-ZRAM_TARGET_SIZE=6442450944  # 6GB dalam Bytes
-ZRAM_COMPRESSOR="zstd"
+# 3. ZRAM & STORAGE OPTIMIZATIONS (STATIC INITS)
+log_msg "Langkah 3: Menginisialisasi VM, ZRAM, dan Block IO Scheduler..."
+write_value 100 /proc/sys/vm/vfs_cache_pressure
 
-# Cek kondisi ZRAM saat ini agar tidak melakukan write lambat jika sudah sesuai
-CURR_SIZE=$(cat /sys/block/zram0/disksize 2>/dev/null || echo "0")
-CURR_COMP=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | grep -o '\[.*\]' | tr -d '[]')
-
-if [ "$CURR_SIZE" != "$ZRAM_TARGET_SIZE" ] || [ "$CURR_COMP" != "$ZRAM_COMPRESSOR" ]; then
-  log_msg "ZRAM tidak cocok (Size: $CURR_SIZE vs $ZRAM_TARGET_SIZE, Comp: $CURR_COMP vs $ZRAM_COMPRESSOR). Membangun ulang ZRAM..."
+# ZRAM 6GB Setup
+ZRAM_SIZE=6442450944
+if [ "$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)" != "$ZRAM_SIZE" ]; then
   swapoff /dev/block/zram0 2>/dev/null || true
   write_value 1 /sys/block/zram0/reset
-  
-  # Set kompresor zstd
-  if grep -q "$ZRAM_COMPRESSOR" /sys/block/zram0/comp_algorithm 2>/dev/null; then
-    write_value "$ZRAM_COMPRESSOR" /sys/block/zram0/comp_algorithm
-    log_msg "ZRAM compressor set ke $ZRAM_COMPRESSOR"
+  if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
+    write_value "zstd" /sys/block/zram0/comp_algorithm
   else
-    # Fallback ke lz4 jika zstd tidak ada di kernel compile config
     write_value "lz4" /sys/block/zram0/comp_algorithm
-    log_msg "ZRAM compressor zstd tidak didukung, menggunakan lz4"
   fi
-  
-  write_value "$ZRAM_TARGET_SIZE" /sys/block/zram0/disksize
+  write_value "$ZRAM_SIZE" /sys/block/zram0/disksize
   write_value 2 /sys/block/zram0/max_comp_streams
   mkswap /dev/block/zram0 2>/dev/null || true
   swapon /dev/block/zram0 -p 32767 2>/dev/null || true
-  log_msg "ZRAM 6GB berhasil dibuat ulang."
-else
-  log_msg "ZRAM sudah optimal (6GB, $ZRAM_COMPRESSOR). Skip rebuild."
 fi
 
-# Terapkan Swappiness dinamis dan parameter Virtual Memory terkalibrasi untuk eMMC 5.1
-SWAPPINESS_VAL=180
-DIRTY_RATIO=15
-DIRTY_BG_RATIO=3
-WRITEBACK_CENTI=150
-EXPIRE_CENTI=1000
-
-case "$MODE" in
-  performance)
-    SWAPPINESS_VAL=200
-    DIRTY_RATIO=10          # Kurangi batas akumulasi agar proses menulis tidak menghentikan layar (lag)
-    DIRTY_BG_RATIO=2
-    WRITEBACK_CENTI=100     # Lakukan sinkronisasi data kotor setiap 1 detik untuk menghindari penumpukan antrean
-    EXPIRE_CENTI=500        # Waktu usang halaman kotor diatur ke 5 detik
-    ;;
-  battery)
-    SWAPPINESS_VAL=160
-    DIRTY_RATIO=20          # Tingkatkan batas akumulasi agar CPU tidak sering terbangun untuk I/O
-    DIRTY_BG_RATIO=5
-    WRITEBACK_CENTI=300     # Kumpulkan data kotor lebih lama (3 detik) untuk efisiensi baterai
-    EXPIRE_CENTI=2000
-    ;;
-  balanced|*)
-    SWAPPINESS_VAL=180
-    DIRTY_RATIO=15
-    DIRTY_BG_RATIO=3
-    WRITEBACK_CENTI=150     # Flush berkala setiap 1.5 detik
-    EXPIRE_CENTI=1000       # Waktu usang halaman kotor diatur ke 10 detik
-    ;;
-esac
-
-write_value "$SWAPPINESS_VAL" /proc/sys/vm/swappiness
-write_value 100 /proc/sys/vm/vfs_cache_pressure
-write_value "$DIRTY_RATIO" /proc/sys/vm/dirty_ratio
-write_value "$DIRTY_BG_RATIO" /proc/sys/vm/dirty_background_ratio
-write_value "$WRITEBACK_CENTI" /proc/sys/vm/dirty_writeback_centisecs
-write_value "$EXPIRE_CENTI" /proc/sys/vm/dirty_expire_centisecs
-
-log_msg "VM parameters applied: swappiness=$SWAPPINESS_VAL, dirty_ratio=$DIRTY_RATIO, dirty_background_ratio=$DIRTY_BG_RATIO, writeback=$WRITEBACK_CENTI centisecs"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 6. OPTIMASI PENYIMPANAN & PENJADWAL I/O (eMMC 5.1)
-# ──────────────────────────────────────────────────────────────────────────────
-log_msg "Section 6: Tuning antrean blok penyimpanan & penjadwal I/O..."
+# Antrean Blok Penyimpanan eMMC 5.1 & Scheduler
 for queue in /sys/block/*/queue; do
   if [ -d "$queue" ]; then
-    # 1. Optimasi Antrean Dasar untuk eMMC 5.1
     write_value 512 "$queue/read_ahead_kb"
-    write_value 0 "$queue/add_random"           # Matikan kontribusi entropi acak dari aktivitas disk
-    write_value 0 "$queue/rotational"           # Pastikan disk dikenali sebagai flash non-rotasional
-    write_value 0 "$queue/iostats"              # Matikan pelacakan statistik I/O untuk mengurangi beban CPU
-    write_value 2 "$queue/rq_affinity"          # Kembalikan I/O yang selesai ke CPU yang meminta (cache hit)
-    write_value 1 "$queue/nomerges"             # Nonaktifkan penggabungan I/O kompleks, izinkan trivial merges untuk efisiensi eMMC 5.1
-
-    # 2. Pemilihan Penjadwal I/O Dinamis untuk Mengurangi Stutter
+    write_value 0 "$queue/add_random"
+    write_value 0 "$queue/rotational"
+    write_value 0 "$queue/iostats"
+    write_value 2 "$queue/rq_affinity"
+    write_value 1 "$queue/nomerges"
     if [ -f "$queue/scheduler" ]; then
-      available_scheds=$(cat "$queue/scheduler")
-      target_sched="mq-deadline"
-      
-      case "$MODE" in
-        performance)
-          # Gunakan scheduler kyber dengan latensi sangat rendah jika tersedia
-          if echo "$available_scheds" | grep -q "kyber"; then
-            target_sched="kyber"
-          else
-            target_sched="mq-deadline"
-          fi
-          ;;
-        balanced|battery|*)
-          target_sched="mq-deadline"
-          ;;
-      esac
-      
-      write_value "$target_sched" "$queue/scheduler"
-      
-      # 3. Kalibrasi Parameter Scheduler secara Dinamis
-      if [ "$target_sched" = "mq-deadline" ]; then
-        if [ "$MODE" = "performance" ]; then
-          write_value 100 "$queue/iosched/read_expire"   # default 500ms -> 100ms untuk respon instan
-          write_value 4 "$queue/iosched/writes_starved"  # prioritaskan pembacaan di atas penulisan
-        else
-          write_value 250 "$queue/iosched/read_expire"
-          write_value 2 "$queue/iosched/writes_starved"
-        fi
-      elif [ "$target_sched" = "kyber" ]; then
-        if [ "$MODE" = "performance" ]; then
-          write_value 2000000 "$queue/iosched/read_lat_nsec"   # Target latensi baca 2ms
-          write_value 10000000 "$queue/iosched/write_lat_nsec" # Target latensi tulis 10ms
-        fi
+      if grep -q "kyber" "$queue/scheduler" 2>/dev/null && [ "$MODE" = "performance" ]; then
+        write_value "kyber" "$queue/scheduler"
+      else
+        write_value "mq-deadline" "$queue/scheduler"
       fi
     fi
   fi
 done
-log_msg "Storage block queue depth & active I/O scheduler calibrated successfully"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 7. TCP SYSCTL NETWORK TUNING
-# ──────────────────────────────────────────────────────────────────────────────
-log_msg "Section 7: Menerapkan optimasi TCP sysctl..."
-write_value "bbr" /proc/sys/net/ipv4/tcp_congestion_control && log_msg "TCP congestion control set to BBR"
-write_value "fq" /proc/sys/net/core/default_qdisc && log_msg "Default qdisc set to FQ"
-write_value 3 /proc/sys/net/ipv4/tcp_fastopen && log_msg "TCP Fast Open set to 3"
-write_value 0 /proc/sys/net/ipv4/tcp_slow_start_after_idle && log_msg "TCP slow start after idle dinonaktifkan (0)"
+# Optimasi TCP BBR
+write_value "bbr" /proc/sys/net/ipv4/tcp_congestion_control
+write_value "fq" /proc/sys/net/core/default_qdisc
+write_value 3 /proc/sys/net/ipv4/tcp_fastopen
+write_value 0 /proc/sys/net/ipv4/tcp_slow_start_after_idle
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 8. HELIO G88 HETEROGENEOUS CPU/GPU EAS OPTIMIZATIONS
-# ──────────────────────────────────────────────────────────────────────────────
-log_msg "Section 8: Menerapkan cpuset locking & optimasi EAS Helio G88..."
+# Membuat skrip apply instan agar runtime manual berjalan mulus
+cat << 'EOF' > "$APPLY_FILE"
+#!/system/bin/sh
+# Trigger re-apply Epitaph Schedutil profile real-time tanpa reboot
+/system/bin/sh /data/adb/service.d/epitaph_tuner.sh
+EOF
+chmod 755 "$APPLY_FILE" 2>/dev/null
 
-# Optimasi cpuset dinamis berdasarkan profil daya aktif
-CPUSET_BG="0-5"
-CPUSET_RESTRICTED="0-5"
+# 4. MEMULAI BACKGROUND MONITORING SECARA AMAN (Cegah Duplikasi Daemon)
+log_msg "Langkah 4: Melakukan sterilisasi dan memicu proses background daemons..."
 
-# Optimasi parameter penjadwal berdasarkan profil daya aktif
-LATENCY_NS=16000000
-MIN_GRAN_NS=3000000
-WAKEUP_GRAN_NS=4000000
+# Hentikan semua daemon lama yang sedang berjalan
+pkill -f "epitaph_tuner.sh --thermal-daemon" || true
+pkill -f "epitaph_tuner.sh --charging-daemon" || true
 
-case "$MODE" in
-  performance)
-    CPUSET_BG="0-7"          # Izinkan background services memakai seluruh core untuk menghilangkan bottleneck game berat
-    CPUSET_RESTRICTED="0-7"
-    LATENCY_NS=10000000      # 10ms untuk responsivitas tinggi (menghilangkan micro-stutter)
-    MIN_GRAN_NS=1500000      # 1.5ms
-    WAKEUP_GRAN_NS=2000000   # 2.0ms
-    ;;
-  battery)
-    CPUSET_BG="0-5"          # Batasi background processes ke little cores untuk hemat baterai
-    CPUSET_RESTRICTED="0-5"
-    LATENCY_NS=24000000      # 24ms untuk meminimalkan siklus bangun CPU (menghemat baterai)
-    MIN_GRAN_NS=4000000      # 4.0ms
-    WAKEUP_GRAN_NS=6000000   # 6.0ms
-    ;;
-  balanced|*)
-    CPUSET_BG="0-5"          # Keseimbangan optimal untuk penggunaan sehari-hari
-    CPUSET_RESTRICTED="0-5"
-    LATENCY_NS=16000000      # 16ms untuk penggunaan sehari-hari
-    MIN_GRAN_NS=3000000      # 3.0ms
-    WAKEUP_GRAN_NS=4000000   # 4.0ms
-    ;;
-esac
+# Jalankan daemon baru di latar belakang secara bersih
+/system/bin/sh /data/adb/service.d/epitaph_tuner.sh --thermal-daemon >/dev/null 2>&1 &
+/system/bin/sh /data/adb/service.d/epitaph_tuner.sh --charging-daemon >/dev/null 2>&1 &
 
-# Terapkan cpuset yang telah ditentukan secara dinamis
-write_value "$CPUSET_BG" /dev/cpuset/background/cpus
-write_value "$CPUSET_BG" /dev/cpuset/system-background/cpus
-write_value "$CPUSET_RESTRICTED" /dev/cpuset/restricted/cpus
-
-# Menjamin foreground dan aplikasi utama (top-app) mendapat alokasi core optimal (0-7)
-write_value "0-7" /dev/cpuset/top-app/cpus
-write_value "0-7" /dev/cpuset/foreground/cpus
-
-# Terapkan parameter scheduler EAS
-write_value "$LATENCY_NS" /proc/sys/kernel/sched_latency_ns
-write_value "$MIN_GRAN_NS" /proc/sys/kernel/sched_min_granularity_ns
-write_value "$WAKEUP_GRAN_NS" /proc/sys/kernel/sched_wakeup_granularity_ns
-
-log_msg "EAS scheduler parameters applied: latency=$LATENCY_NS ns, min_granularity=$MIN_GRAN_NS ns, cpuset_bg=$CPUSET_BG"
-
-# Tulis status akhir untuk dibaca user/KSU
+# Buat berkas status untuk info user / Kernel Manager
 echo "active_profile: $MODE" > "$STATUS_FILE"
 echo "wifi_status: cfg=$CFG_LOADED, vendor=$WLAN_LOADED" >> "$STATUS_FILE"
-echo "zram_status: size=6GB, comp=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | grep -o '\[.*\]' | tr -d '[]')" >> "$STATUS_FILE"
-echo "uclamp_status: top-app-min=$UCLAMP_MIN_TOP_APP" >> "$STATUS_FILE"
+echo "thermal_monitor: active" >> "$STATUS_FILE"
+echo "charging_boost: ready" >> "$STATUS_FILE"
 echo "last_applied: $(date)" >> "$STATUS_FILE"
 
-log_msg "=== EPITAPH TUNER COMPLETED SUCCESSFULLY ==="
+log_msg "=== EPITAPH TUNER INITIALIZATION COMPLETED SUCCESSFULLY ==="
